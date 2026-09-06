@@ -1,0 +1,84 @@
+Next.js와 무료 클라우드 데이터베이스(Supabase 또는 Vercel Postgres)를 조합하면 Vercel 단일 플랫폼 환경에서 바로 구현할 수 있습니다.
+
+---
+
+### 시스템 아키텍처 및 기술 스택
+
+* **프레임워크**: Next.js (App Router) — 단일 프로젝트 내에서 프론트엔드 UI와 백엔드 API(Server Actions)를 모두 처리
+* **데이터베이스**: Supabase(PostgreSQL) 또는 Vercel Postgres — 사용자 제출 데이터 저장 및 실시간 상태 동기화
+* **스타일링**: Tailwind CSS — 빔프로젝터 송출용 반응형 화면 구성
+* **호스팅**: Vercel — 깃허브 연동 자동 배포 및 도메인/SSL 무료 제공
+
+---
+
+### 주요 페이지 및 기능 구성
+
+**1. 사용자 입력 화면 (`/`)**
+
+* QR 코드를 스캔했을 때 진입하는 모바일 친화적 폼 페이지입니다.
+* 이름(텍스트), 소속(드롭다운 `select`), 기도제목(텍스트 영역)을 입력받아 DB의 `participants` 테이블로 전송합니다.
+* 제출 완료 시 "기도제목이 접수되었습니다" 안내 카드를 띄워 중복 제출을 방지합니다.
+
+**2. 관리자 매칭 대시보드 (`/admin`)**
+
+* 비밀번호 기반 간이 인증을 거쳐 접속합니다.
+* 실시간 접수 현황(전체 인원, 소속별 인원)을 테이블 형태로 확인합니다.
+* **매칭 옵션 버튼**: '2인 1조', '3인 1조', '동일 소속 제외 매칭', '완전 랜덤 매칭' 등의 알고리즘 실행 버튼을 배치합니다.
+* 매칭 결과를 확정하면 DB의 `match_groups` 테이블에 저장되어 송출 화면에 반영됩니다.
+
+**3. 스크린 송출 화면 (`/display`)**
+
+* 현장 빔프로젝터나 대형 모니터에 띄우는 전체화면(F11) 전용 뷰입니다.
+* 확정된 조별 카드(조 번호, 멤버 이름, 소속, 기도제목)를 가독성 높은 그리드 레이아웃으로 출력합니다.
+* 카드 클릭 시 특정 조의 기도제목을 팝업으로 크게 띄워 함께 통성기도할 수 있도록 구성합니다.
+
+---
+
+### 2인/3인 분할 매칭 알고리즘 로직
+
+홀수 인원이 발생하거나 2~3인 혼합 조가 필요할 때 다음과 같은 배열 분할(Chunking) 로직을 서버 액션에 적용합니다.
+
+```typescript
+// 총 인원을 2명 또는 3명 단위로 균등 분할하는 기본 로직
+function createPrayerGroups(members: Participant[], targetGroupSize: 2 | 3) {
+  const shuffled = [...members].sort(() => Math.random() - 0.5);
+  const groups: Participant[][] = [];
+
+  if (targetGroupSize === 2) {
+    // 2인 기준 매칭: 홀수 1명이 남으면 마지막 조를 3인으로 통합
+    while (shuffled.length > 0) {
+      if (shuffled.length === 3) {
+        groups.push(shuffled.splice(0, 3));
+      } else {
+        groups.push(shuffled.splice(0, 2));
+      }
+    }
+  } else {
+    // 3인 기준 매칭: 남는 인원(1~2명)에 따라 2인 조 또는 4인 조로 보정
+    while (shuffled.length > 0) {
+      if (shuffled.length === 4) {
+        groups.push(shuffled.splice(0, 2));
+        groups.push(shuffled.splice(0, 2));
+      } else {
+        groups.push(shuffled.splice(0, Math.min(3, shuffled.length)));
+      }
+    }
+  }
+  return groups;
+}
+
+```
+
+---
+
+### 배포 및 현장 운용 가이드
+
+* **QR 코드 생성**: Vercel에 배포된 프로덕션 URL(`[https://project-name.vercel.app](https://project-name.vercel.app)`)을 네이버 QR코드나 무료 QR 생성기에 등록해 주보/화면에 노출합니다.
+* **데이터 리셋 기능**: 관리자 페이지에 행사 종료 후 데이터를 일괄 삭제하거나 엑셀(CSV)로 내려받는 기능을 추가해 개인정보를 관리합니다.
+
+참고 출처:
+
+* [Vercel 공식 문서 (Deploying Next.js)](https://vercel.com/docs/frameworks/nextjs)
+* [Supabase 공식 문서 (Database & Realtime)](https://supabase.com/docs)
+
+매칭 시 같은 소속끼리 묶이는 것을 선호하시나요, 아니면 서로 다른 소속 인원이 골고루 섞이도록 우선 배치하는 방식을 원하시나요?
