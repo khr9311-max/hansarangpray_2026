@@ -1,6 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import QrCode from '@/components/QrCode';
+import type { QrMatrix } from '@/lib/qr';
+
 // 화면에 실제로 쓰는 필드만 받습니다. 서버 컴포넌트가 이보다 많은 필드를
 // 넘기면 그 값 그대로 페이지 소스(RSC 페이로드)에 실리므로, 여기서
 // 타입으로도 이름 외 정보가 섞여 들어오지 않게 막아 둡니다.
@@ -54,6 +57,30 @@ function makeChip(p: DisplayMember): Chip {
   };
 }
 
+/**
+ * 신청 QR. 늦게 온 사람도 언제든 스캔할 수 있게 항상 띄워 둡니다.
+ * 결과 발표 중에는 조 카드가 주인공이므로 작게 줄입니다.
+ */
+function SignupQr({ matrix, compact }: { matrix: QrMatrix; compact: boolean }) {
+  return (
+    <div className={`rounded-2xl bg-white shadow-2xl ${compact ? 'p-2.5' : 'p-5'}`}>
+      <QrCode
+        matrix={matrix}
+        className={`block ${compact ? 'h-24 w-24' : 'h-48 w-48 xl:h-56 xl:w-56'}`}
+      />
+      <p
+        className={`mt-2 text-center font-bold leading-tight text-slate-900 ${
+          compact ? 'text-[0.6rem]' : 'text-base'
+        }`}
+      >
+        QR 스캔하고
+        <br />
+        기도제목 신청하기
+      </p>
+    </div>
+  );
+}
+
 /** 조 수에 따라 카드 크기를 줄여 한 화면에 최대한 담습니다. */
 function gridClass(groupCount: number) {
   if (groupCount <= 6) return 'grid-cols-2 lg:grid-cols-3 text-3xl';
@@ -66,9 +93,11 @@ function gridClass(groupCount: number) {
 export default function DisplayStage({
   participants,
   round,
+  qr,
 }: {
   participants: DisplayMember[];
   round: { id: string; groups: DisplayGroup[] } | null;
+  qr: QrMatrix;
 }) {
   // 새로고침으로 다시 열었을 때 결과가 사라지면 안 되므로,
   // 이미 확정된 매칭이 있으면 결과 화면에서 시작합니다.
@@ -132,7 +161,7 @@ export default function DisplayStage({
   if (phase === 'revealed' && round) {
     return (
       <>
-        <div className={`grid gap-4 ${gridClass(round.groups.length)}`}>
+        <div className={`grid gap-4 pb-44 ${gridClass(round.groups.length)}`}>
           {round.groups.map((group, index) => (
             <div
               key={group.groupNumber}
@@ -166,6 +195,10 @@ export default function DisplayStage({
         >
           추첨 다시 보기 (Space)
         </button>
+
+        <div className="fixed bottom-6 left-6 z-40">
+          <SignupQr matrix={qr} compact />
+        </div>
       </>
     );
   }
@@ -174,6 +207,7 @@ export default function DisplayStage({
 
   return (
     <div className="flex min-h-[78dvh] flex-col">
+      <div className="flex flex-1 gap-6">
       {/* 이름표가 떠다니는 통 */}
       <div
         data-shake={drawing ? '' : undefined}
@@ -233,6 +267,15 @@ export default function DisplayStage({
             외 {hiddenCount}명
           </p>
         )}
+      </div>
+
+        {/* 신청 QR. 통 옆에 두어 떠다니는 이름표를 가리지 않게 합니다. */}
+        <aside className="flex shrink-0 flex-col items-center justify-center">
+          <SignupQr matrix={qr} compact={false} />
+          <p className="mt-3 max-w-[14rem] break-all text-center text-xs text-white/25">
+            {qr.text}
+          </p>
+        </aside>
       </div>
 
       {/* 통 아래 안내 · 추첨 버튼 */}

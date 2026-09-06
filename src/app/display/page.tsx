@@ -1,11 +1,33 @@
+import { headers } from 'next/headers';
 import DisplayStage from './DisplayStage';
 import RealtimeRefresher from '@/components/RealtimeRefresher';
 import { getActiveRound, getParticipants } from '@/lib/queries';
+import { createQrMatrix } from '@/lib/qr';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * QR 이 가리킬 신청 주소. 요청 헤더에서 뽑아 쓰기 때문에
+ * 도메인을 바꾸거나 다른 곳에 배포해도 QR 이 알아서 따라갑니다.
+ */
+async function signupUrl(): Promise<string> {
+  if (process.env.NEXT_PUBLIC_SITE_URL) return process.env.NEXT_PUBLIC_SITE_URL;
+
+  const headerList = await headers();
+  const host = headerList.get('x-forwarded-host') ?? headerList.get('host');
+  if (!host) return 'https://hansarangpray-2026.vercel.app';
+
+  const proto = headerList.get('x-forwarded-proto') ?? (host.startsWith('localhost') ? 'http' : 'https');
+  return `${proto}://${host}`;
+}
+
 export default async function DisplayPage() {
-  const [participants, round] = await Promise.all([getParticipants(), getActiveRound()]);
+  const [participants, round, url] = await Promise.all([
+    getParticipants(),
+    getActiveRound(),
+    signupUrl(),
+  ]);
+  const qr = createQrMatrix(url);
 
   return (
     <main className="flex min-h-dvh flex-col bg-slate-950 px-8 py-6 text-white">
@@ -43,6 +65,7 @@ export default async function DisplayPage() {
         기도제목을 보게 한 의미가 사라집니다.
       */}
       <DisplayStage
+        qr={qr}
         participants={participants.map((p, i) => ({ id: `p${i}`, name: p.name }))}
         round={
           round && {
