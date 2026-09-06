@@ -12,7 +12,7 @@ export default function HomePage() {
           </p>
           <h1 className="mt-2 text-3xl font-bold text-slate-900">2026 짝기도 매칭</h1>
           <p className="mt-3 text-sm leading-relaxed text-slate-500">
-            이름과 팀, 성별만 남겨 주시면
+            이름과 팀, 기도제목을 남겨 주시면
             <br />
             짝을 지어 앞 화면에 안내해 드립니다.
           </p>
