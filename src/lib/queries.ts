@@ -1,13 +1,7 @@
 import 'server-only';
 
 import { createServerClient } from './supabase/server';
-import {
-  GENDERS,
-  type MatchMode,
-  type Participant,
-  type PrayerGroup,
-  type TargetSize,
-} from './types';
+import type { MatchMode, Participant, PrayerGroup, TargetSize } from './types';
 
 export type ActiveRound = {
   id: string;
@@ -68,6 +62,31 @@ export async function getParticipants(): Promise<Participant[]> {
   return (data ?? []) as Participant[];
 }
 
+/** 개인 링크(`/me/[id]`)용. 본인 이름 표시에만 씁니다. */
+export async function getParticipant(id: string): Promise<Participant | null> {
+  const supabase = createServerClient();
+  const { data, error } = await supabase
+    .from('participants')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) {
+    console.error('[getParticipant]', error);
+    return null;
+  }
+  return (data as Participant) ?? null;
+}
+
+/**
+ * 이 참가자가 속한 조를 현재 확정된 회차에서 찾습니다.
+ * 아직 매칭 전이거나 회차가 내려간 상태면 null.
+ */
+export async function getMyGroup(participantId: string): Promise<PrayerGroup | null> {
+  const round = await getActiveRound();
+  if (!round) return null;
+  return round.groups.find((g) => g.members.some((m) => m.id === participantId)) ?? null;
+}
+
 /** 팀별 인원 수를 많은 순으로. */
 export function countByTeam(participants: Participant[]) {
   const counts = new Map<string, number>();
@@ -77,12 +96,4 @@ export function countByTeam(participants: Participant[]) {
   return [...counts.entries()]
     .map(([team, count]) => ({ team, count }))
     .sort((a, b) => b.count - a.count);
-}
-
-/** 성별 인원 수. GENDERS 순서를 유지해 화면에서 자리가 흔들리지 않게 합니다. */
-export function countByGender(participants: Participant[]) {
-  return GENDERS.map((gender) => ({
-    gender,
-    count: participants.filter((p) => p.gender === gender).length,
-  }));
 }

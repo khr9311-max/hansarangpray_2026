@@ -2,12 +2,7 @@ import Link from 'next/link';
 import LoginForm from './LoginForm';
 import RealtimeRefresher from '@/components/RealtimeRefresher';
 import { isAdmin } from '@/lib/auth';
-import {
-  countByGender,
-  countByTeam,
-  getActiveRound,
-  getParticipants,
-} from '@/lib/queries';
+import { countByTeam, getActiveRound, getParticipants } from '@/lib/queries';
 import { MATCH_MODE_LABEL, type MatchMode, type TargetSize } from '@/lib/types';
 import {
   deleteParticipantAction,
@@ -26,24 +21,12 @@ const MATCH_OPTIONS: {
   hint: string;
   primary: boolean;
 }[] = [
-  {
-    mode: 'mix',
-    targetSize: 2,
-    label: '2인 1조',
-    hint: '팀 + 성별 섞기',
-    primary: true,
-  },
-  {
-    mode: 'mix',
-    targetSize: 3,
-    label: '3인 1조',
-    hint: '팀 + 성별 섞기',
-    primary: true,
-  },
-  { mode: 'team', targetSize: 2, label: '2인 1조', hint: '팀만 섞기', primary: false },
-  { mode: 'team', targetSize: 3, label: '3인 1조', hint: '팀만 섞기', primary: false },
+  { mode: 'team', targetSize: 2, label: '2인 1조', hint: '팀 섞기', primary: true },
+  { mode: 'team', targetSize: 3, label: '3인 1조', hint: '팀 섞기', primary: true },
+  { mode: 'team', targetSize: 4, label: '4인 1조', hint: '팀 섞기', primary: true },
   { mode: 'random', targetSize: 2, label: '2인 1조', hint: '완전 랜덤', primary: false },
   { mode: 'random', targetSize: 3, label: '3인 1조', hint: '완전 랜덤', primary: false },
+  { mode: 'random', targetSize: 4, label: '4인 1조', hint: '완전 랜덤', primary: false },
 ];
 
 export default async function AdminPage() {
@@ -57,7 +40,6 @@ export default async function AdminPage() {
 
   const [participants, round] = await Promise.all([getParticipants(), getActiveRound()]);
   const byTeam = countByTeam(participants);
-  const byGender = countByGender(participants);
 
   return (
     <main className="min-h-dvh bg-slate-50 px-5 py-8">
@@ -104,11 +86,6 @@ export default async function AdminPage() {
           <div className="flex items-baseline gap-3">
             <h2 className="text-sm font-semibold text-slate-500">접수 현황</h2>
             <p className="text-3xl font-bold text-slate-900">{participants.length}명</p>
-            {participants.length > 0 && (
-              <p className="text-sm text-slate-400">
-                {byGender.map(({ gender, count }) => `${gender} ${count}`).join(' · ')}
-              </p>
-            )}
           </div>
 
           {byTeam.length > 0 && (
@@ -200,7 +177,7 @@ export default async function AdminPage() {
                       <li key={member.id}>
                         {member.name}
                         <span className="ml-1.5 text-xs text-slate-400">
-                          {member.team} · {member.gender}
+                          {member.team}
                         </span>
                       </li>
                     ))}
@@ -224,7 +201,7 @@ export default async function AdminPage() {
                   <tr>
                     <th className="pb-2 pr-4 font-medium">이름</th>
                     <th className="pb-2 pr-4 font-medium">팀</th>
-                    <th className="pb-2 pr-4 font-medium">성별</th>
+                    <th className="pb-2 pr-4 font-medium">기도제목</th>
                     <th className="pb-2 font-medium" />
                   </tr>
                 </thead>
@@ -235,7 +212,9 @@ export default async function AdminPage() {
                         {participant.name}
                       </td>
                       <td className="py-3 pr-4 text-slate-500">{participant.team}</td>
-                      <td className="py-3 pr-4 text-slate-500">{participant.gender}</td>
+                      <td className="max-w-md py-3 pr-4 text-slate-600">
+                        {participant.prayer_request}
+                      </td>
                       <td className="py-3 text-right">
                         <form action={deleteParticipantAction}>
                           <input type="hidden" name="id" value={participant.id} />

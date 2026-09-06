@@ -31,8 +31,8 @@ export async function runMatchingAction(formData: FormData) {
 
   const targetSize = Number(formData.get('target_size')) as TargetSize;
   const mode = String(formData.get('mode')) as MatchMode;
-  if (targetSize !== 2 && targetSize !== 3) throw new Error('조 인원이 올바르지 않습니다.');
-  if (!['mix', 'team', 'random'].includes(mode)) throw new Error('매칭 방식이 올바르지 않습니다.');
+  if (![2, 3, 4].includes(targetSize)) throw new Error('조 인원이 올바르지 않습니다.');
+  if (!['team', 'random'].includes(mode)) throw new Error('매칭 방식이 올바르지 않습니다.');
 
   const supabase = createAdminClient();
 

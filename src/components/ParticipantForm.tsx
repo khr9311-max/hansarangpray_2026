@@ -2,8 +2,9 @@
 
 import { useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
+import Link from 'next/link';
 import { submitParticipant, type SubmitState } from '@/app/actions';
-import { GENDERS, TEAMS } from '@/lib/types';
+import { TEAMS } from '@/lib/types';
 
 const initialState: SubmitState = { status: 'idle', message: '' };
 
@@ -15,7 +16,7 @@ function SubmitButton() {
       disabled={pending}
       className="w-full rounded-xl bg-brand-600 px-4 py-4 text-lg font-semibold text-white transition active:scale-[0.99] disabled:opacity-50"
     >
-      {pending ? '보내는 중…' : '신청하기'}
+      {pending ? '보내는 중…' : '기도제목 보내기'}
     </button>
   );
 }
@@ -34,6 +35,22 @@ export default function ParticipantForm() {
           <br />
           화면을 보며 함께 기도해 주세요.
         </p>
+
+        {state.participantId && (
+          <Link
+            href={`/me/${state.participantId}`}
+            className="mt-6 inline-block w-full rounded-xl bg-slate-900 px-4 py-3.5 text-sm font-semibold text-white"
+          >
+            내 기도짝 확인하기 →
+          </Link>
+        )}
+        {state.participantId && (
+          <p className="mt-3 text-xs text-slate-400">
+            매칭이 확정되면 이 링크에서 기도짝의 기도제목을 볼 수 있어요.
+            <br />
+            링크를 저장해 두세요.
+          </p>
+        )}
       </div>
     );
   }
@@ -81,26 +98,27 @@ export default function ParticipantForm() {
         </select>
       </div>
 
-      <fieldset>
-        <legend className="mb-2 block text-sm font-semibold text-slate-700">성별</legend>
-        <div className="grid grid-cols-2 gap-2">
-          {GENDERS.map((gender) => (
-            <label
-              key={gender}
-              className="relative flex cursor-pointer items-center justify-center rounded-xl border border-slate-300 px-4 py-3 text-base text-slate-600 transition has-[:checked]:border-brand-500 has-[:checked]:bg-brand-50 has-[:checked]:font-semibold has-[:checked]:text-brand-700"
-            >
-              <input
-                type="radio"
-                name="gender"
-                value={gender}
-                required
-                className="sr-only"
-              />
-              {gender}
-            </label>
-          ))}
-        </div>
-      </fieldset>
+      <div>
+        <label
+          htmlFor="prayer_request"
+          className="mb-2 block text-sm font-semibold text-slate-700"
+        >
+          기도제목
+        </label>
+        <textarea
+          id="prayer_request"
+          name="prayer_request"
+          required
+          rows={5}
+          maxLength={500}
+          placeholder="함께 기도하고 싶은 내용을 적어 주세요."
+          className="w-full resize-none rounded-xl border border-slate-300 px-4 py-3 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+        />
+        <p className="mt-2 text-xs text-slate-400">
+          송출 화면에는 이름만 나갑니다. 기도제목은 매칭된 기도짝끼리만 개인 링크로 볼 수
+          있어요.
+        </p>
+      </div>
 
       {state.status === 'error' && (
         <p className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">

@@ -23,13 +23,13 @@ export async function GET() {
     }
   }
 
-  const header = ['조', '이름', '팀', '성별', '접수시각'];
+  const header = ['조', '이름', '팀', '기도제목', '접수시각'];
   const rows = participants.map((p) =>
     [
       groupNumberById.get(p.id)?.toString() ?? '',
       p.name,
       p.team,
-      p.gender,
+      p.prayer_request,
       new Date(p.created_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }),
     ]
       .map(escapeCsv)

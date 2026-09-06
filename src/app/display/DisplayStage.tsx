@@ -1,7 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Participant, PrayerGroup } from '@/lib/types';
+// 화면에 실제로 쓰는 필드만 받습니다. 서버 컴포넌트가 이보다 많은 필드를
+// 넘기면 그 값 그대로 페이지 소스(RSC 페이로드)에 실리므로, 여기서
+// 타입으로도 이름 외 정보가 섞여 들어오지 않게 막아 둡니다.
+type DisplayMember = { id: string; name: string };
+type DisplayGroup = { groupNumber: number; members: DisplayMember[] };
 
 type Phase = 'idle' | 'ready' | 'drawing' | 'revealed';
 
@@ -36,7 +40,7 @@ function scatter() {
   return { left: rand(3, 84), top: rand(5, 82) };
 }
 
-function makeChip(p: Pick<Participant, 'id' | 'name'>): Chip {
+function makeChip(p: DisplayMember): Chip {
   return {
     id: p.id,
     name: p.name,
@@ -63,8 +67,8 @@ export default function DisplayStage({
   participants,
   round,
 }: {
-  participants: Participant[];
-  round: { id: string; groups: PrayerGroup[] } | null;
+  participants: DisplayMember[];
+  round: { id: string; groups: DisplayGroup[] } | null;
 }) {
   // 새로고침으로 다시 열었을 때 결과가 사라지면 안 되므로,
   // 이미 확정된 매칭이 있으면 결과 화면에서 시작합니다.
@@ -148,9 +152,6 @@ export default function DisplayStage({
                 {group.members.map((member) => (
                   <li key={member.id} className="font-bold leading-tight text-white">
                     {member.name}
-                    <span className="ml-2 text-[0.65em] font-normal text-white/40">
-                      {member.team}
-                    </span>
                   </li>
                 ))}
               </ul>

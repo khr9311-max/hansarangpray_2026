@@ -68,16 +68,12 @@ function hardestFirst(members: Participant[]): Participant[] {
 
 type Slot = { size: number; members: Participant[] };
 
-// 같은 팀은 어떤 경우에도 피하고 싶고, 성별은 그다음입니다.
-// 팀 제약을 어기느니 성별이 겹치는 편이 낫도록 자릿수를 벌려 둡니다.
 const SAME_TEAM_PENALTY = 100;
-const SAME_GENDER_PENALTY = 10;
 
-function penaltyOf(slot: Slot, member: Participant, mixGender: boolean): number {
+function penaltyOf(slot: Slot, member: Participant): number {
   let score = 0;
   for (const existing of slot.members) {
     if (existing.team === member.team) score += SAME_TEAM_PENALTY;
-    if (mixGender && existing.gender === member.gender) score += SAME_GENDER_PENALTY;
   }
   // 덜 찬 조부터 채워 한쪽으로 쏠리지 않게 합니다.
   score += slot.members.length;
@@ -90,11 +86,7 @@ function penaltyOf(slot: Slot, member: Participant, mixGender: boolean): number 
  * (예: 한 팀이 전체의 절반을 넘으면 수학적으로 불가능합니다)
  * 겹치는 횟수를 최소에 가깝게 유지합니다.
  */
-function assignGreedily(
-  ordered: Participant[],
-  sizes: number[],
-  mixGender: boolean,
-): Slot[] {
+function assignGreedily(ordered: Participant[], sizes: number[]): Slot[] {
   const slots: Slot[] = sizes.map((size) => ({ size, members: [] }));
 
   for (const member of ordered) {
@@ -104,7 +96,7 @@ function assignGreedily(
     // 점수가 같은 조가 여럿일 때 늘 앞쪽 조가 뽑히지 않도록 순서를 섞습니다.
     for (const slot of shuffle(slots)) {
       if (slot.members.length >= slot.size) continue;
-      const score = penaltyOf(slot, member, mixGender);
+      const score = penaltyOf(slot, member);
       if (score < bestScore) {
         bestScore = score;
         best = slot;
@@ -130,19 +122,6 @@ function countTeamCollisions(slots: Slot[]): number {
   return collisions;
 }
 
-/** 성별까지 겹친 정도. 팀 충돌이 같을 때의 2차 기준입니다. */
-function countGenderCollisions(slots: Slot[]): number {
-  let collisions = 0;
-  for (const slot of slots) {
-    for (let i = 0; i < slot.members.length; i++) {
-      for (let j = i + 1; j < slot.members.length; j++) {
-        if (slot.members[i].gender === slot.members[j].gender) collisions++;
-      }
-    }
-  }
-  return collisions;
-}
-
 /** 그리디는 시작 순서를 타므로 여러 번 돌려 가장 좋은 결과를 고릅니다. */
 const ATTEMPTS = 40;
 
@@ -150,12 +129,12 @@ const ATTEMPTS = 40;
  * 참가자 명단을 조로 나눕니다.
  * @param members    참가자 목록
  * @param targetSize 2인 1조 / 3인 1조
- * @param mode       팀+성별 섞기(mix) · 팀만 섞기(team) · 완전 랜덤(random)
+ * @param mode       팀 섞기(team) · 완전 랜덤(random)
  */
 export function createPrayerGroups(
   members: Participant[],
   targetSize: TargetSize,
-  mode: MatchMode = 'mix',
+  mode: MatchMode = 'team',
 ): PrayerGroup[] {
   if (members.length === 0) return [];
 
@@ -176,11 +155,9 @@ export function createPrayerGroups(
               return slot;
             });
           })()
-        : assignGreedily(hardestFirst(members), sizes, mode === 'mix');
+        : assignGreedily(hardestFirst(members), sizes);
 
-    const score =
-      countTeamCollisions(slots) * SAME_TEAM_PENALTY +
-      (mode === 'mix' ? countGenderCollisions(slots) * SAME_GENDER_PENALTY : 0);
+    const score = countTeamCollisions(slots);
 
     if (score < bestScore) {
       bestScore = score;

@@ -8,7 +8,7 @@ create table if not exists public.participants (
   id              uuid primary key default gen_random_uuid(),
   name            text not null,
   team            text not null,
-  gender          text not null check (gender in ('형제', '자매')),
+  prayer_request  text not null,
   created_at      timestamptz not null default now()
 );
 
@@ -20,8 +20,8 @@ create index if not exists participants_created_at_idx
 --    is_active = true 를 유지합니다. (/display 는 이 회차를 봅니다)
 create table if not exists public.match_rounds (
   id           uuid primary key default gen_random_uuid(),
-  mode         text not null,              -- 'mix' | 'team' | 'random'
-  target_size  smallint not null,          -- 2 | 3
+  mode         text not null,              -- 'team' | 'random'
+  target_size  smallint not null,          -- 2 | 3 | 4
   is_active    boolean not null default false,
   created_at   timestamptz not null default now()
 );
