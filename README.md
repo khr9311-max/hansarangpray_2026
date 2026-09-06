@@ -2,6 +2,8 @@
 
 QR로 신청을 받아 짝을 지어주고, 빔프로젝터 화면에서 추첨하듯 조를 공개하는 현장용 웹앱.
 
+**배포 링크**: https://hansarangpray-2026.vercel.app
+
 - **프레임워크** Next.js 15 (App Router · Server Actions)
 - **DB** Supabase (PostgreSQL + Realtime)
 - **스타일** Tailwind CSS v4
@@ -9,12 +11,12 @@ QR로 신청을 받아 짝을 지어주고, 빔프로젝터 화면에서 추첨�
 
 ## 화면
 
-| 경로 | 용도 |
-| --- | --- |
-| `/` | 참가자 입력 폼. QR로 진입하는 모바일 화면 |
-| `/admin` | 관리자 대시보드. 접수 현황 · 매칭 실행 · CSV · 데이터 삭제 |
-| `/display` | 빔프로젝터 송출 화면. **모두에게** 보이는 화면 — 이름만 나옵니다 |
-| `/me/[참가자id]` | 참가자 개인 링크. **본인과 기도짝에게만** 보이는 화면 — 조원들의 기도제목이 나옵니다 |
+| 경로 | 링크 | 용도 |
+| --- | --- | --- |
+| `/` | [바로가기](https://hansarangpray-2026.vercel.app) | 참가자 입력 폼. QR로 진입하는 모바일 화면 |
+| `/admin` | [바로가기](https://hansarangpray-2026.vercel.app/admin) | 관리자 대시보드. 접수 현황 · 매칭 실행 · CSV · 데이터 삭제 |
+| `/display` | [바로가기](https://hansarangpray-2026.vercel.app/display) | 빔프로젝터 송출 화면. **모두에게** 보이는 화면 — 이름만 나옵니다 |
+| `/me/[참가자id]` | — | 참가자 개인 링크. **본인과 기도짝에게만** 보이는 화면 — 조원들의 기도제목이 나옵니다 |
 
 `/admin`에서 매칭을 확정하면 `/display`가 Realtime으로 즉시 갱신됩니다. 새로고침이나 폴링이 필요 없습니다.
 
