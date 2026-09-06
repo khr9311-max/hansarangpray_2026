@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-50: #f2f6ff;
+  --color-brand-100: #e2ebff;
+  --color-brand-500: #4f6ef7;
+  --color-brand-600: #3d57d8;
+  --color-brand-700: #2f43ab;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  word-break: keep-all; /* 한글 단어가 어색하게 잘리지 않도록 */
+}
+
+/* ── 송출 화면 추첨 연출 ─────────────────────────────── */
+
+/* 통 안에서 이름표가 둥둥 떠다니는 움직임.
+   칩마다 --dx/--dy/--r0/--r1 을 다르게 줘서 같은 키프레임으로 제각각 움직입니다. */
+@keyframes drift {
+  0% {
+    transform: translate(0, 0) rotate(var(--r0));
+  }
+  25% {
+    transform: translate(var(--dx), var(--dy)) rotate(var(--r1));
+  }
+  50% {
+    transform: translate(calc(var(--dx) * -0.7), calc(var(--dy) * 0.6)) rotate(var(--r0));
+  }
+  75% {
+    transform: translate(calc(var(--dx) * 0.5), calc(var(--dy) * -0.8)) rotate(var(--r1));
+  }
+  100% {
+    transform: translate(0, 0) rotate(var(--r0));
+  }
+}
+
+/* 조 카드가 하나씩 튀어나오는 등장 */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 추첨 중 통이 흔들리는 움직임 */
+@keyframes shake {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  20% {
+    transform: translate(-6px, 3px) rotate(-0.6deg);
+  }
+  40% {
+    transform: translate(5px, -4px) rotate(0.5deg);
+  }
+  60% {
+    transform: translate(-4px, -3px) rotate(-0.4deg);
+  }
+  80% {
+    transform: translate(6px, 2px) rotate(0.6deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-drift],
+  [data-shake] {
+    animation: none !important;
+  }
+}
