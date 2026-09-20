@@ -37,24 +37,32 @@ export async function submitParticipant(
     return { status: 'error', message: '팀을 다시 선택해 주세요.' };
   }
 
-  const supabase = createServerClient();
-  const { data, error } = await supabase
-    .from('participants')
-    .insert({ name, team, prayer_request: prayerRequest })
-    .select('id')
-    .single();
+  try {
+    const supabase = createServerClient();
+    const { data, error } = await supabase
+      .from('participants')
+      .insert({ name, team, prayer_request: prayerRequest })
+      .select('id')
+      .single();
 
-  if (error || !data) {
-    console.error('[submitParticipant]', error);
+    if (error || !data) {
+      console.error('[submitParticipant]', error);
+      return {
+        status: 'error',
+        message: '접수 중 문제가 생겼습니다. 잠시 후 다시 시도해 주세요.',
+      };
+    }
+
+    return {
+      status: 'success',
+      message: '기도제목이 접수되었습니다.',
+      participantId: data.id as string,
+    };
+  } catch (err) {
+    console.error('[submitParticipant exception]', err);
     return {
       status: 'error',
-      message: '접수 중 문제가 생겼습니다. 잠시 후 다시 시도해 주세요.',
+      message: '서버 연결에 실패했습니다. 데이터베이스 상태를 확인해 주세요.',
     };
   }
-
-  return {
-    status: 'success',
-    message: '기도제목이 접수되었습니다.',
-    participantId: data.id as string,
-  };
 }

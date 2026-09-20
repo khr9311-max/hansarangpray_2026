@@ -34,7 +34,10 @@ export async function getActiveRound(): Promise<ActiveRound | null> {
     .select('group_number, match_members(seq, participants(*))')
     .eq('round_id', round.id)
     .order('group_number', { ascending: true });
-  if (error) throw error;
+  if (error) {
+    console.error('[getActiveRound groups]', error);
+    return null;
+  }
 
   return {
     id: round.id,
@@ -53,13 +56,21 @@ export async function getActiveRound(): Promise<ActiveRound | null> {
 }
 
 export async function getParticipants(): Promise<Participant[]> {
-  const supabase = createServerClient();
-  const { data, error } = await supabase
-    .from('participants')
-    .select('*')
-    .order('created_at', { ascending: false });
-  if (error) throw error;
-  return (data ?? []) as Participant[];
+  try {
+    const supabase = createServerClient();
+    const { data, error } = await supabase
+      .from('participants')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.error('[getParticipants]', error);
+      return [];
+    }
+    return (data ?? []) as Participant[];
+  } catch (err) {
+    console.error('[getParticipants]', err);
+    return [];
+  }
 }
 
 /** 개인 링크(`/me/[id]`)용. 본인 이름 표시에만 씁니다. */
