@@ -4,6 +4,7 @@ import RealtimeRefresher from '@/components/RealtimeRefresher';
 import KeepWindowOpenNotice from '@/components/KeepWindowOpenNotice';
 import { getActiveRound, getParticipants } from '@/lib/queries';
 import { createQrMatrix } from '@/lib/qr';
+import { toDisplaySnapshot } from '@/lib/display';
 
 export const dynamic = 'force-dynamic';
 
@@ -69,19 +70,7 @@ export default async function DisplayPage() {
       */}
       <DisplayStage
         qr={qr}
-        participants={participants.map((p, i) => ({ id: `p${i}`, name: p.name }))}
-        round={
-          round && {
-            id: round.id,
-            groups: round.groups.map((g) => ({
-              groupNumber: g.groupNumber,
-              members: g.members.map((m, i) => ({
-                id: `${g.groupNumber}-${i}`,
-                name: m.name,
-              })),
-            })),
-          }
-        }
+        {...toDisplaySnapshot(participants, round)}
       />
     </main>
   );
