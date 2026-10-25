@@ -14,10 +14,32 @@ const initialState: SubmitState = { status: 'idle', message: '' };
  * 같은 사람이 모르고 두 번 신청하게 됩니다. (DB에 이름 중복 제약이 없습니다)
  */
 const STORAGE_KEY = 'jjak_participant';
+const SUBMISSION_KEY = 'jjak_submission_request';
 /** 다음 행사 때 지난 행사의 죽은 링크가 남지 않도록 하루가 지나기 전에 잊습니다. */
 const REMEMBER_MS = 12 * 60 * 60 * 1000;
 
 type Remembered = { id: string; at: number };
+
+/** One private submission key per browser, shared across tabs and preserved on retry. */
+export async function getSubmissionRequest(reset = false): Promise<string> {
+  const readOrCreate = () => {
+    if (!reset) {
+      try {
+        const saved = JSON.parse(localStorage.getItem(SUBMISSION_KEY) ?? 'null') as Partial<Remembered> | null;
+        if (saved && typeof saved.id === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(saved.id)
+          && typeof saved.at === 'number' && Date.now() - saved.at < REMEMBER_MS) return saved.id;
+      } catch { /* Storage may be unavailable; this tab still retains its request key. */ }
+    }
+    const id = crypto.randomUUID();
+    try { localStorage.setItem(SUBMISSION_KEY, JSON.stringify({ id, at: Date.now() })); } catch { /* See above. */ }
+    return id;
+  };
+  // Serializing the first read/create also covers two tabs opened at the same time.
+  if (navigator.locks) {
+    try { return await navigator.locks.request(SUBMISSION_KEY, readOrCreate); } catch { /* Fall back when locks are unavailable. */ }
+  }
+  return readOrCreate();
+}
 
 function readRemembered(): string | null {
   try {
@@ -80,10 +102,10 @@ function StartOverButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-function MyPairLink({ id }: { id: string }) {
+function MyPairLink({ id, showEdit = true }: { id: string; showEdit?: boolean }) {
   return (
     <>
-    <Link href={`/edit/${id}`} className="mt-5 inline-block w-full rounded-xl border border-brand-600 px-4 py-3 text-sm font-semibold text-brand-600">내 신청 정보 수정하기</Link>
+    {showEdit && <Link href={`/edit/${id}`} className="mt-5 inline-block w-full rounded-xl border border-brand-600 px-4 py-3 text-sm font-semibold text-brand-600">내 신청 정보 수정하기</Link>}
     <Link
       href={`/me/${id}`}
       className="mt-6 inline-block w-full rounded-xl bg-slate-900 px-4 py-3.5 text-sm font-semibold text-white"
@@ -95,11 +117,13 @@ function MyPairLink({ id }: { id: string }) {
 
 export default function ParticipantForm({ participant, editToken = '' }: { participant?: Participant; editToken?: string }) {
   const [state, formAction] = useActionState(submitParticipant, initialState);
+  const editing = !!participant;
 
   // undefined = 아직 브라우저 저장소를 확인하기 전(서버 렌더 시점).
   // 이 구분이 없으면 이미 신청한 사람에게도 빈 폼이 한 번 번쩍 보였다가 바뀌는데,
   // 그 순간에 제출 버튼을 눌러 버리면 중복 신청이 됩니다.
   const [savedId, setSavedId] = useState<string | null | undefined>(undefined);
+  const [submissionId, setSubmissionId] = useState<string | null>(null);
   const [name, setName] = useState(participant?.name ?? '');
   const [team, setTeam] = useState(participant?.team ?? '');
   const [prayer, setPrayer] = useState(participant?.prayer_request ?? '');
@@ -108,25 +132,44 @@ export default function ParticipantForm({ participant, editToken = '' }: { parti
   const [shareInGroup, setShareInGroup] = useState(participant?.prayer_request === '기도제목은 매칭된 조 안에서 직접 나눌게요.');
 
   useEffect(() => {
+    if (editing) return;
+    let mounted = true;
     setSavedId(readRemembered());
-  }, []);
+    void getSubmissionRequest().then(id => { if (mounted) setSubmissionId(id); });
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEY && event.newValue) {
+        const id = readRemembered();
+        if (id) { setSavedId(id); setStartingOver(false); }
+      }
+      if (event.key === SUBMISSION_KEY && event.newValue) {
+        void getSubmissionRequest().then(id => { if (mounted) setSubmissionId(id); });
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => { mounted = false; window.removeEventListener('storage', onStorage); };
+  }, [editing]);
 
   useEffect(() => {
     if (state.status !== 'success' || !state.participantId) return;
-    remember(state.participantId);
-    setSavedId(state.participantId);
+    // 운영자가 다른 사람을 수정해도 이 기기의 본인 신청 기록은 바꾸지 않습니다.
+    if (!editing) {
+      remember(state.participantId);
+      setSavedId(state.participantId);
+    }
     setStartingOver(false);
-  }, [state]);
+  }, [state, editing]);
 
-  function startOver() {
+  async function startOver() {
     forget();
     setSavedId(null);
+    setSubmissionId(null);
     setStartingOver(true);
     setShareInGroup(false); setName(''); setTeam(''); setPrayer('');
+    setSubmissionId(await getSubmissionRequest(true));
   }
 
   // 저장소를 읽기 전에는 폼도 안내도 띄우지 않습니다.
-  if (!participant && savedId === undefined) {
+  if (!participant && (savedId === undefined || !submissionId)) {
     return (
       <div
         aria-hidden
@@ -141,7 +184,7 @@ export default function ParticipantForm({ participant, editToken = '' }: { parti
   }
 
   // 1) 방금 제출을 마친 경우
-  if (!startingOver && state.status === 'success' && state.participantId) {
+  if (!startingOver && state.status === 'success' && state.participantId && (editing || savedId === state.participantId)) {
     return (
       <div className="rounded-2xl border border-brand-100 bg-white p-8 text-center shadow-sm">
         <div className="mb-4 text-5xl">🙏</div>
@@ -152,7 +195,7 @@ export default function ParticipantForm({ participant, editToken = '' }: { parti
           화면을 보며 함께 기도해 주세요.
         </p>
 
-        <MyPairLink id={state.participantId} />
+        <MyPairLink id={state.participantId} showEdit={!participant} />
         {participant && <button type="button" className="mt-4 text-sm underline" onClick={() => { setEditVersion(participant.edit_version); setStartingOver(true); }}>다시 수정하기</button>}
         <p className="mt-3 text-xs text-slate-400">
           매칭이 확정되면 이 링크에서 기도짝의 기도제목을 볼 수 있어요.
@@ -188,6 +231,7 @@ export default function ParticipantForm({ participant, editToken = '' }: { parti
       onReset={event => event.preventDefault()}
       className="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
     >
+      {!participant && <input type="hidden" name="submission_id" value={submissionId ?? ''} />}
       {participant && <>
         <h2 className="text-xl font-bold">내 신청 정보 수정</h2>
         <p className="text-sm text-slate-500">이름·팀·기도제목을 바꿔도 기존 조는 유지됩니다.</p>

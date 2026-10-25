@@ -1,6 +1,14 @@
 import type { Participant, PrayerGroup } from './types';
 
 export type DisplayMember = { id: string; name: string };
+export const DRAW_MS = 3200;
+export type DisplayPhase = 'idle' | 'ready' | 'drawing' | 'revealed';
+
+export function getDisplayPhase(hasRound: boolean, startedAt: string | null, serverTime: string): DisplayPhase {
+  if (!hasRound) return 'idle';
+  if (!startedAt) return 'ready';
+  return Date.parse(serverTime) - Date.parse(startedAt) < DRAW_MS ? 'drawing' : 'revealed';
+}
 export type DisplayRound = {
   id: string;
   groups: { groupNumber: number; members: DisplayMember[] }[];

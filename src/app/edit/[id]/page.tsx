@@ -7,10 +7,11 @@ export const dynamic = 'force-dynamic';
 export const metadata = { robots: { index: false, follow: false }, referrer: 'no-referrer' };
 
 export default async function EditPage({ params, searchParams }: {
-  params: Promise<{ id: string }>; searchParams: Promise<{ token?: string }>;
+  params: Promise<{ id: string }>; searchParams: Promise<{ token?: string | string[] }>;
 }) {
   const { id } = await params;
-  const { token = '' } = await searchParams;
+  const query = await searchParams;
+  const token = typeof query.token === 'string' ? query.token : '';
   const allowed = await allowParticipantEdit(id, token);
   const participant = allowed ? await getParticipant(id) : null;
   return <main className="min-h-dvh bg-slate-50 px-5 py-10"><div className="mx-auto max-w-md">

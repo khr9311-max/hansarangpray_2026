@@ -2,7 +2,7 @@
 
 import { createAdminClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
-import { allowParticipantEdit, rememberParticipantAccess } from '@/lib/participant-access';
+import { allowParticipantEdit, rememberParticipantAccess, validEditToken } from '@/lib/participant-access';
 import { TEAMS } from '@/lib/types';
 
 export type SubmitState = {
@@ -13,14 +13,20 @@ export type SubmitState = {
 
 const MAX_NAME = 20;
 const MAX_PRAYER = 500;
+const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
 export async function submitParticipant(
   _prevState: SubmitState,
   formData: FormData,
 ): Promise<SubmitState> {
   const id = String(formData.get('participant_id') ?? '');
-  if (id && !(await allowParticipantEdit(id, String(formData.get('edit_token') ?? '')))) {
+  const editToken = String(formData.get('edit_token') ?? '');
+  if (id && !(await allowParticipantEdit(id, editToken))) {
     return { status: 'error', message: '수정 권한이 만료되었습니다. 운영자에게 본인용 수정 링크를 요청해 주세요.' };
+  }
+  const submissionId = String(formData.get('submission_id') ?? '');
+  if (!id && !UUID.test(submissionId)) {
+    return { status: 'error', message: '신청 정보를 준비하지 못했습니다. 화면을 새로고침한 후 다시 시도해 주세요.' };
   }
   const name = String(formData.get('name') ?? '').trim();
   const team = String(formData.get('team') ?? '').trim();
@@ -50,7 +56,7 @@ export async function submitParticipant(
     const supabase = createAdminClient();
     const { data, error } = id
       ? await supabase.rpc('prayer_edit', { p_id: id, p_version: Number(formData.get('edit_version')), p_name: name, p_team: team, p_prayer: prayerRequest })
-      : await supabase.rpc('prayer_register', { p_name: name, p_team: team, p_prayer: prayerRequest });
+      : await supabase.rpc('prayer_submit', { p_request_id: submissionId, p_name: name, p_team: team, p_prayer: prayerRequest });
     if (error?.code === '40001') return { status: 'error', message: '다른 화면에서 이미 수정되었습니다. 새로고침 후 최신 내용을 확인해 주세요.' };
 
     if (error || !data) {
@@ -62,7 +68,9 @@ export async function submitParticipant(
     }
 
     const participantId = id || String(data);
-    await rememberParticipantAccess(participantId);
+    // 관리자 권한으로만 수정한 경우 본인용 권한을 새로 부여하지 않습니다.
+    // 전달받은 유효한 수정 링크는 저장 후 같은 브라우저에서 계속 쓸 수 있습니다.
+    if (!id || validEditToken(id, editToken)) await rememberParticipantAccess(participantId);
     revalidatePath('/admin'); revalidatePath('/display'); revalidatePath('/me', 'layout');
     revalidatePath(`/edit/${participantId}`);
     return {

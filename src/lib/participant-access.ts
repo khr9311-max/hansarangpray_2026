@@ -9,7 +9,8 @@ export function editToken(id: string, expires = Date.now() + 12 * 60 * 60 * 1000
   return `${expires}.${createHmac('sha256', secret).update(`participant-edit:${id}:${expires}`).digest('hex')}`;
 }
 
-export function validEditToken(id: string, token: string) {
+export function validEditToken(id: string, token: unknown) {
+  if (typeof token !== 'string') return false;
   const expires = Number(token.split('.')[0]);
   if (!Number.isSafeInteger(expires) || expires <= Date.now()) return false;
   const expected = Buffer.from(editToken(id, expires));

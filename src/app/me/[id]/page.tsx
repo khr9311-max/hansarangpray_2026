@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import RealtimeRefresher from '@/components/RealtimeRefresher';
 import { getMyGroup, getParticipant } from '@/lib/queries';
+import { getEventSnapshot } from '@/lib/event';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,7 +11,7 @@ export default async function MyGroupPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [me, group] = await Promise.all([getParticipant(id), getMyGroup(id)]);
+  const [me, group, snapshot] = await Promise.all([getParticipant(id), getMyGroup(id), getEventSnapshot()]);
 
   if (!me) {
     return (
@@ -45,9 +46,9 @@ export default async function MyGroupPage({
         {!group ? (
           <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
             <div className="mb-4 text-4xl">⏳</div>
-            <p className="font-semibold text-slate-700">아직 매칭 전입니다</p>
+            <p className="font-semibold text-slate-700">{snapshot.round ? '추가 참여자 반영 대기 중입니다' : '아직 매칭 전입니다'}</p>
             <p className="mt-2 text-sm leading-relaxed text-slate-400">
-              관리자가 매칭을 확정하면
+              {snapshot.round ? '관리자가 추가 참여자를 반영하면' : '관리자가 매칭을 확정하면'}
               <br />이 화면이 자동으로 바뀝니다. 잠시만 기다려 주세요.
             </p>
           </div>

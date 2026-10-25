@@ -5,15 +5,14 @@ import { useRouter } from 'next/navigation';
 import QrCode from '@/components/QrCode';
 import type { QrMatrix } from '@/lib/qr';
 import type { DisplayMember, DisplayRound } from '@/lib/display';
+import { DRAW_MS, getDisplayPhase, type DisplayPhase } from '@/lib/display';
+import ActionForm from '@/components/ActionForm';
+import { applyParticipantsAction } from '@/app/admin/actions';
 import { prepareDrawAction } from './actions';
 
 // 화면에 실제로 쓰는 필드만 받습니다. 서버 컴포넌트가 이보다 많은 필드를
 // 넘기면 그 값 그대로 페이지 소스(RSC 페이로드)에 실리므로, 여기서
 // 타입으로도 이름 외 정보가 섞여 들어오지 않게 막아 둡니다.
-type Phase = 'idle' | 'ready' | 'drawing' | 'revealed';
-
-/** 추첨 연출 길이. 너무 길면 현장이 지루해집니다. */
-const DRAW_MS = 3200;
 /** 추첨 중 이름표가 다시 흩어지는 주기 */
 const SHUFFLE_MS = 170;
 /** 대기 중 이름표가 천천히 자리를 바꾸는 주기 */
@@ -102,7 +101,7 @@ export default function DisplayStage(props: StageProps) {
   const [current, setCurrent] = useState(props);
   // Never show an older refresh response after a newer event revision.
   if (props.revision > current.revision || (props.revision === current.revision && props.serverTime > current.serverTime)) setCurrent(props);
-  return <Stage {...current} />;
+  return <Stage key={`${current.round?.id}:${current.drawStartedAt}`} {...current} />;
 }
 
 function Stage({ participants, round: serverRound, pendingCount, qr, revision, drawStartedAt, serverTime, admin }: StageProps) {
@@ -112,7 +111,7 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
   const preparingRef = useRef(false);
   const [drawError, setDrawError] = useState<{ message: string; requiresAdmin?: boolean } | null>(null);
   const remainingCount = pendingCount;
-  const [phase, setPhase] = useState<Phase>(round ? (drawStartedAt ? 'revealed' : 'ready') : 'idle');
+  const [phase, setPhase] = useState<DisplayPhase>(() => getDisplayPhase(!!round, drawStartedAt, serverTime));
   const [chips, setChips] = useState<Chip[]>([]);
   const drawTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -180,9 +179,13 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
   const drawNotice = (
     <>
       {remainingCount > 0 && (
-        <p className="mb-4 rounded-xl border border-amber-300/30 bg-amber-300/10 px-5 py-3 text-center text-lg text-amber-100" role="status">
-          추가 신청 {remainingCount}명 · 추첨 버튼을 누르면 기존 조를 유지하고 추가 참가자만 배정합니다.
-        </p>
+        <div className="mb-4 rounded-xl border border-amber-300/30 bg-amber-300/10 px-5 py-3 text-center text-amber-100">
+          <p role="status">추가 신청 {remainingCount}명 · 기존 조를 유지한 채 추가 참여자 반영을 기다리고 있습니다.</p>
+          {admin && <ActionForm action={applyParticipantsAction} className="mx-auto mt-3 max-w-md rounded-lg bg-white p-3 text-slate-800">
+            <input type="hidden" name="revision" value={revision} />
+            <button className="w-full rounded-lg bg-brand-600 px-4 py-2 font-bold text-white">추가 참여자 반영</button>
+          </ActionForm>}
+        </div>
       )}
       {drawError && (
         <div role="alert" className="mb-4 rounded-xl bg-red-950 px-5 py-3 text-center text-red-100">
@@ -230,7 +233,7 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
           disabled={preparing}
           className="fixed bottom-6 right-3 z-50 max-w-[55%] sm:max-w-none rounded-full border border-white/15 bg-slate-900 px-5 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:opacity-50"
         >
-          {preparing ? '신청 명단 확인·배정 중…' : remainingCount > 0 ? '추가 참가자 배정하고 추첨 (Space)' : '모든 화면에서 추첨 다시 보기'}
+          {preparing ? '결과 공개 요청 중…' : '모든 화면에서 추첨 다시 보기'}
         </button>}
 
         <div className="fixed bottom-6 left-6 z-40">
@@ -329,7 +332,7 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
             disabled={preparing}
             className="rounded-2xl bg-brand-600 px-12 py-5 text-3xl font-bold text-white shadow-xl transition hover:bg-brand-500 active:scale-[0.98] disabled:opacity-50"
           >
-            {preparing ? '신청 명단 확인·배정 중…' : remainingCount > 0 ? '추가 참가자 배정하고 추첨' : '추첨 시작'}
+            {preparing ? '결과 공개 요청 중…' : '추첨 시작'}
             <span className="ml-3 text-lg font-normal text-white/60">Space</span>
           </button>
         ) : (

@@ -8,6 +8,7 @@ import { isAdmin } from '@/lib/auth';
 import { countByTeam } from '@/lib/queries';
 import { MATCH_MODE_LABEL, TARGET_SIZES } from '@/lib/types';
 import {
+  applyParticipantsAction,
   drawAction,
   deleteParticipantAction,
   logoutAction,
@@ -17,16 +18,6 @@ import {
 } from './actions';
 
 export const dynamic = 'force-dynamic';
-
-const MATCH_OPTIONS = (['team', 'random'] as const).flatMap((mode) =>
-  TARGET_SIZES.map((targetSize) => ({
-    mode,
-    targetSize,
-    label: `${targetSize}인 1조`,
-    hint: MATCH_MODE_LABEL[mode],
-    primary: mode === 'team',
-  })),
-);
 
 export default async function AdminPage() {
   if (!(await isAdmin())) {
@@ -38,6 +29,8 @@ export default async function AdminPage() {
   }
 
   const { participants, round, revision } = await getEventSnapshot();
+  const matchedIds = new Set(round?.groups.flatMap(group => group.members.map(member => member.id)));
+  const pendingCount = participants.filter(p => !matchedIds.has(p.id)).length;
   const byTeam = countByTeam(participants);
 
   return (
@@ -102,45 +95,34 @@ export default async function AdminPage() {
 
         {/* 매칭 실행 */}
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
-          <h2 className="text-sm font-semibold text-slate-500">{round ? '기존 조 유지 중' : '첫 조 편성'}</h2>
-          <p className="mt-2 text-sm text-slate-600">새 신청자는 기존 조 중 인원이 적은 조에 자동 합류합니다. 기존 조원과 조 번호는 바뀌지 않습니다.</p>
-          {round && <ActionForm action={drawAction} className="mt-4">
-            <input type="hidden" name="revision" value={revision} />
-            <button className="w-full rounded-xl bg-brand-600 p-4 font-bold text-white">모든 화면에서 추첨·결과 공개</button>
-            <p className="mt-2 text-xs text-slate-500">폰에서 누르면 PC 송출 화면도 함께 바뀝니다. 조 편성은 그대로 유지됩니다.</p>
-          </ActionForm>}
-          <details open={round ? undefined : true} key={round?.id ?? 'initial'} className="mt-4">
-          <summary className="cursor-pointer font-semibold text-slate-700">{round ? '전체 조를 새로 편성하기 (기존 조 변경)' : '인원과 방식 선택'}</summary>
-          <div className="mt-4 grid gap-2 sm:grid-cols-3">
-            {MATCH_OPTIONS.map((option) => (
-              <ActionForm key={`${option.mode}-${option.targetSize}`} action={runMatchingAction}>
-                <input type="hidden" name="revision" value={revision} />
-                {round && <input name="confirm" required placeholder="재편성 입력" aria-label={`${option.hint} ${option.label} 재편성 확인`} className="mb-2 w-full rounded-lg border p-2 text-sm" />}
-                <input type="hidden" name="mode" value={option.mode} />
-                <input type="hidden" name="target_size" value={option.targetSize} />
-                <button
-                  type="submit"
-                  disabled={participants.length === 0}
-                  className={`w-full rounded-xl px-4 py-3 text-sm font-semibold transition active:scale-[0.99] disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 ${
-                    option.primary
-                      ? 'border border-brand-600 bg-brand-600 text-white'
-                      : 'border border-slate-300 bg-white text-slate-700'
-                  }`}
-                >
-                  {option.label}
-                  <span
-                    className={`ml-2 text-xs font-normal ${
-                      option.primary ? 'text-white/70' : 'text-slate-400'
-                    }`}
-                  >
-                    {option.hint}
-                  </span>
-                </button>
-              </ActionForm>
-            ))}
+          <h2 className="text-sm font-semibold text-slate-500">조 편성 관리</h2>
+          <p className="mt-2 text-sm text-slate-600">{round ? `현재 ${round.groups.length}조 · 추가 반영 대기 ${pendingCount}명` : '아직 편성된 조가 없습니다. 먼저 조를 편성해 주세요.'}</p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <ActionForm action={applyParticipantsAction} className="rounded-xl border border-brand-100 bg-brand-50 p-4">
+              <input type="hidden" name="revision" value={revision} />
+              <button type="submit" disabled={!round} className="w-full rounded-xl bg-brand-600 px-4 py-3 font-bold text-white disabled:opacity-40">추가 참여자 반영</button>
+              <p className="mt-3 text-sm text-slate-600">미배정 참여자만 인원이 적은 기존 조에 추가합니다. 기존 조원·조 번호·공개 상태는 유지됩니다.</p>
+            </ActionForm>
+            <ActionForm key={round?.id ?? 'initial'} action={runMatchingAction} className="rounded-xl border border-slate-200 p-4">
+              <input type="hidden" name="revision" value={revision} />
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <label className="text-xs text-slate-600">조 인원
+                  <select name="target_size" defaultValue={round?.targetSize ?? 2} className="mt-1 w-full rounded-lg border bg-white p-2 text-base">{TARGET_SIZES.map(size => <option key={size} value={size}>{size}인 1조</option>)}</select>
+                </label>
+                <label className="text-xs text-slate-600">편성 방식
+                  <select name="mode" defaultValue={round?.mode ?? 'team'} className="mt-1 w-full rounded-lg border bg-white p-2 text-base"><option value="team">팀 섞기</option><option value="random">완전 랜덤</option></select>
+                </label>
+              </div>
+              {round && <label className="mb-3 flex items-start gap-2 text-sm text-slate-600"><input type="checkbox" name="confirm" value="재편성" required className="mt-1 shrink-0" />기존 조 편성을 초기화하고 전체 참여자를 새로 편성합니다.</label>}
+              <button type="submit" disabled={!participants.length} className="w-full rounded-xl bg-slate-800 px-4 py-3 font-bold text-white disabled:opacity-40">초기화 후 조 편성</button>
+              <p className="mt-3 text-sm text-slate-600">참가자 명단과 기도제목은 유지하고 조 편성만 새로 만듭니다.</p>
+            </ActionForm>
           </div>
-
-          </details>
+          {round && <ActionForm action={drawAction} className="mt-4 border-t border-slate-100 pt-4">
+            <input type="hidden" name="revision" value={revision} />
+            <button type="submit" className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-700">모든 화면에서 추첨·결과 공개</button>
+            <p className="mt-2 text-xs text-slate-500">저장된 조 편성을 공개합니다. 추가 신청자는 위의 ‘추가 참여자 반영’을 먼저 눌러 주세요.</p>
+          </ActionForm>}
           <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-5">
             {round ? (
               <>
@@ -214,8 +196,8 @@ export default async function AdminPage() {
                     <tr key={participant.id}>
                       <td className="py-3 pr-4 font-medium text-slate-900">
                         {participant.name}
-                        <Link href={`/edit/${participant.id}`} className="mt-1 block text-xs text-brand-600 underline">정보 수정</Link>
-                        <Link href={`/edit/${participant.id}?token=${editToken(participant.id)}`} className="mt-1 block text-xs text-slate-500 underline">본인 전달용 수정 링크</Link>
+                        <Link prefetch={false} href={`/edit/${participant.id}`} className="mt-1 block text-xs text-brand-600 underline">정보 수정</Link>
+                        <Link prefetch={false} href={`/edit/${participant.id}?token=${editToken(participant.id)}`} className="mt-1 block text-xs text-slate-500 underline">본인 전달용 수정 링크</Link>
                       </td>
                       <td className="py-3 pr-4 text-slate-500">{participant.team}</td>
                       <td className="max-w-md py-3 pr-4 text-slate-600">
