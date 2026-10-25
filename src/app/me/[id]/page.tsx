@@ -30,7 +30,7 @@ export default async function MyGroupPage({
       {/* 매칭 전이면 관리자가 확정하는 순간 자동으로 다시 그려집니다. */}
       <RealtimeRefresher
         channel={`me-${id}`}
-        tables={['match_rounds', 'match_groups', 'match_members']}
+        tables={['participants', 'match_control', 'match_rounds', 'match_groups', 'match_members']}
       />
 
       <div className="mx-auto w-full max-w-md">
@@ -39,6 +39,7 @@ export default async function MyGroupPage({
             {me.name}님 · {me.team}
           </p>
           <h1 className="mt-2 text-2xl font-bold text-slate-900">내 기도짝</h1>
+          <Link href={`/edit/${id}`} className="mt-3 inline-block text-sm text-brand-600 underline">내 신청 정보 수정하기</Link>
         </header>
 
         {!group ? (

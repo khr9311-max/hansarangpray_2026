@@ -83,50 +83,42 @@ function SignupQr({ matrix, compact }: { matrix: QrMatrix; compact: boolean }) {
 
 /** 조 수에 따라 카드 크기를 줄여 한 화면에 최대한 담습니다. */
 function gridClass(groupCount: number) {
-  if (groupCount <= 6) return 'grid-cols-2 lg:grid-cols-3 text-3xl';
+  if (groupCount <= 6) return 'grid-cols-2 lg:grid-cols-3 text-xl sm:text-3xl';
   if (groupCount <= 12) return 'grid-cols-2 lg:grid-cols-4 text-2xl';
-  if (groupCount <= 24) return 'grid-cols-3 lg:grid-cols-5 text-xl';
-  if (groupCount <= 40) return 'grid-cols-4 lg:grid-cols-6 text-lg';
-  return 'grid-cols-4 lg:grid-cols-8 text-base';
+  if (groupCount <= 24) return 'grid-cols-2 lg:grid-cols-5 text-xl';
+  if (groupCount <= 40) return 'grid-cols-2 lg:grid-cols-6 text-lg';
+  return 'grid-cols-2 lg:grid-cols-8 text-base';
 }
 
-export default function DisplayStage({
-  participants,
-  round: serverRound,
-  pendingCount,
-  qr,
-}: {
+type StageProps = {
+  revision: number; drawStartedAt: string | null; serverTime: string; admin: boolean;
   participants: DisplayMember[];
   round: DisplayRound | null;
   pendingCount: number;
   qr: QrMatrix;
-}) {
+};
+
+export default function DisplayStage(props: StageProps) {
+  const [current, setCurrent] = useState(props);
+  // Never show an older refresh response after a newer event revision.
+  if (props.revision > current.revision || (props.revision === current.revision && props.serverTime > current.serverTime)) setCurrent(props);
+  return <Stage {...current} />;
+}
+
+function Stage({ participants, round: serverRound, pendingCount, qr, revision, drawStartedAt, serverTime, admin }: StageProps) {
   const router = useRouter();
-  const [preparedRound, setPreparedRound] = useState<DisplayRound | null>(null);
-  const round = preparedRound ?? serverRound;
+  const round = serverRound;
   const [preparing, setPreparing] = useState(false);
   const preparingRef = useRef(false);
-  const requestVersion = useRef(0);
   const [drawError, setDrawError] = useState<{ message: string; requiresAdmin?: boolean } | null>(null);
-  const remainingCount = preparedRound
-    ? Math.max(0, participants.length - preparedRound.groups.reduce((sum, group) => sum + group.members.length, 0))
-    : pendingCount;
-  // 새로고침으로 다시 열었을 때 결과가 사라지면 안 되므로,
-  // 이미 확정된 매칭이 있으면 결과 화면에서 시작합니다.
-  const [phase, setPhase] = useState<Phase>(round ? 'revealed' : 'idle');
+  const remainingCount = pendingCount;
+  const [phase, setPhase] = useState<Phase>(round ? (drawStartedAt ? 'revealed' : 'ready') : 'idle');
   const [chips, setChips] = useState<Chip[]>([]);
-  const seenRoundId = useRef<string | null>(round?.id ?? null);
   const drawTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const visible = useMemo(() => participants.slice(0, MAX_CHIPS), [participants]);
   const hiddenCount = participants.length - visible.length;
   const chipKey = JSON.stringify(visible.map((p) => [p.id, p.name]));
-
-  useEffect(() => {
-    if (!preparedRound || !serverRound || serverRound.id !== preparedRound.id) return;
-    const size = (value: DisplayRound) => value.groups.reduce((sum, group) => sum + group.members.length, 0);
-    if (size(serverRound) >= size(preparedRound)) setPreparedRound(null);
-  }, [serverRound, preparedRound]);
 
   // 명단이 바뀌면(=새로 접수되면) 이름표를 다시 만듭니다.
   useEffect(() => {
@@ -135,19 +127,19 @@ export default function DisplayStage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chipKey]);
 
-  // 관리자가 매칭을 새로 확정하면 추첨 대기 상태로 돌아갑니다.
+  // Shared database timestamp: a phone command starts the same reveal on every display.
   useEffect(() => {
-    const id = serverRound?.id ?? null;
-    if (id === seenRoundId.current) return;
-    seenRoundId.current = id;
-    requestVersion.current += 1;
-    preparingRef.current = false;
-    setPreparing(false);
-    setPreparedRound(null);
-    setDrawError(null);
     if (drawTimer.current) clearTimeout(drawTimer.current);
-    setPhase(id ? 'ready' : 'idle');
-  }, [serverRound?.id]);
+    if (!serverRound) { setPhase('idle'); return; }
+    if (!drawStartedAt) { setPhase('ready'); return; }
+    const remaining = DRAW_MS - (Date.parse(serverTime) - Date.parse(drawStartedAt));
+    if (remaining <= 0) setPhase('revealed');
+    else {
+      setPhase('drawing');
+      drawTimer.current = setTimeout(() => setPhase('revealed'), remaining);
+    }
+    return () => { if (drawTimer.current) clearTimeout(drawTimer.current); };
+  }, [serverRound?.id, drawStartedAt, serverTime]);
 
   // 이름표 자리 바꾸기. 추첨 중에는 빠르게, 대기 중에는 느긋하게.
   useEffect(() => {
@@ -159,43 +151,22 @@ export default function DisplayStage({
     return () => clearInterval(timer);
   }, [phase]);
 
-  useEffect(() => () => {
-    requestVersion.current += 1;
-    if (drawTimer.current) clearTimeout(drawTimer.current);
-  }, []);
-
   const startDraw = useCallback(async () => {
-    if (!round || phase === 'drawing' || preparingRef.current) return;
+    if (!admin || !round || phase === 'drawing' || preparingRef.current) return;
     preparingRef.current = true;
-    setPreparing(true);
-    setDrawError(null);
-    const version = ++requestVersion.current;
+    setPreparing(true); setDrawError(null);
     try {
-      const result = await prepareDrawAction();
-      if (version !== requestVersion.current) return;
-      if (result.status === 'error') {
-        setDrawError(result);
-        router.refresh();
-        return;
-      }
-      setPreparedRound(result.snapshot.round);
-      setPhase('drawing');
-      if (drawTimer.current) clearTimeout(drawTimer.current);
-      drawTimer.current = setTimeout(() => setPhase('revealed'), DRAW_MS);
+      const result = await prepareDrawAction(revision);
+      if (result.status === 'error') setDrawError(result);
       router.refresh();
-    } catch {
-      if (version === requestVersion.current) setDrawError({ message: '서버에 연결하지 못했습니다. 다시 시도해 주세요.' });
-    } finally {
-      if (version === requestVersion.current) {
-        preparingRef.current = false;
-        setPreparing(false);
-      }
-    }
-  }, [phase, round, router]);
+    } catch { setDrawError({ message: '서버에 연결하지 못했습니다. 결과를 확인하고 다시 시도해 주세요.' }); }
+    finally { preparingRef.current = false; setPreparing(false); }
+  }, [admin, phase, round, revision, router]);
 
   // 스페이스바로도 추첨을 돌릴 수 있게 합니다. 현장에서 마우스보다 편합니다.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!admin) return;
       if (event.code !== 'Space' && event.code !== 'Enter') return;
       if (event.repeat || (event.target instanceof HTMLElement && event.target.closest('a, button, input, select, textarea'))) return;
       if (phase !== 'ready' && phase !== 'revealed') return;
@@ -204,7 +175,7 @@ export default function DisplayStage({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [phase, startDraw]);
+  }, [admin, phase, startDraw]);
 
   const drawNotice = (
     <>
@@ -231,7 +202,7 @@ export default function DisplayStage({
             <div
               key={group.groupNumber}
               style={{ animation: `pop-in 420ms ease-out ${index * 55}ms both` }}
-              className="rounded-2xl border border-white/10 bg-white/5 p-5"
+              className="min-w-0 break-words rounded-2xl border border-white/10 bg-white/5 p-3 sm:p-5"
             >
               <div className="mb-3 flex items-baseline gap-2">
                 <span className="text-[0.7em] font-semibold tracking-widest text-brand-500">
@@ -253,14 +224,14 @@ export default function DisplayStage({
           ))}
         </div>
 
-        <button
+        {admin && <button
           type="button"
           onClick={startDraw}
           disabled={preparing}
-          className="fixed bottom-6 right-6 rounded-full border border-white/15 bg-slate-900 px-5 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:opacity-50"
+          className="fixed bottom-6 right-3 z-50 max-w-[55%] sm:max-w-none rounded-full border border-white/15 bg-slate-900 px-5 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:opacity-50"
         >
-          {preparing ? '신청 명단 확인·배정 중…' : remainingCount > 0 ? '추가 참가자 배정하고 추첨 (Space)' : '추첨 다시 보기 (Space)'}
-        </button>
+          {preparing ? '신청 명단 확인·배정 중…' : remainingCount > 0 ? '추가 참가자 배정하고 추첨 (Space)' : '모든 화면에서 추첨 다시 보기'}
+        </button>}
 
         <div className="fixed bottom-6 left-6 z-40">
           <SignupQr matrix={qr} compact />
@@ -274,12 +245,12 @@ export default function DisplayStage({
   return (
     <div className="flex min-h-[28rem] flex-1 flex-col">
       {drawNotice}
-      <div className="flex min-h-[22rem] flex-1 gap-6">
+      <div className="flex min-h-[22rem] flex-1 flex-col gap-6 sm:flex-row">
       {/* 이름표가 떠다니는 통 */}
       <div
         data-shake={drawing ? '' : undefined}
         style={drawing ? { animation: 'shake 420ms ease-in-out infinite' } : undefined}
-        className="relative flex-1 overflow-hidden rounded-[2.5rem] border-4 border-white/10 bg-gradient-to-b from-white/[0.07] to-transparent"
+        className="relative min-h-[22rem] min-w-0 flex-1 overflow-hidden rounded-[2.5rem] border-4 border-white/10 bg-gradient-to-b from-white/[0.07] to-transparent"
       >
         {/* 유리통 느낌의 하이라이트 */}
         <div className="pointer-events-none absolute inset-x-8 top-0 h-24 rounded-b-full bg-white/[0.06] blur-2xl" />
@@ -351,7 +322,7 @@ export default function DisplayStage({
           <p className="text-2xl font-semibold tracking-wide text-white/70">
             섞는 중…
           </p>
-        ) : phase === 'ready' ? (
+        ) : phase === 'ready' && admin ? (
           <button
             type="button"
             onClick={startDraw}

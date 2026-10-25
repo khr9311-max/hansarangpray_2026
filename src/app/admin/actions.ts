@@ -2,9 +2,9 @@
 
 import { revalidatePath } from 'next/cache';
 import { assertAdmin, signIn, signOut } from '@/lib/auth';
-import { createAdminClient } from '@/lib/supabase/server';
+import { eventCommand, getEventSnapshot } from '@/lib/event';
 import { createPrayerGroups } from '@/lib/matching';
-import { TARGET_SIZES, type MatchMode, type Participant, type TargetSize } from '@/lib/types';
+import { TARGET_SIZES, type MatchMode, type TargetSize } from '@/lib/types';
 
 export type AdminState = { status: 'idle' | 'error'; message: string };
 
@@ -25,120 +25,37 @@ export async function logoutAction() {
   revalidatePath('/admin');
 }
 
-/** 매칭을 실행하고 결과를 새 회차로 확정합니다. (/display 에 즉시 반영) */
-export async function runMatchingAction(formData: FormData) {
-  await assertAdmin();
-
-  const targetSize = Number(formData.get('target_size')) as TargetSize;
-  const mode = String(formData.get('mode')) as MatchMode;
-  if (!TARGET_SIZES.includes(targetSize)) throw new Error('조 인원이 올바르지 않습니다.');
-  if (!['team', 'random'].includes(mode)) throw new Error('매칭 방식이 올바르지 않습니다.');
-
-  const supabase = createAdminClient();
-
-  const { data: participants, error: fetchError } = await supabase
-    .from('participants')
-    .select('*')
-    .order('created_at', { ascending: true });
-  if (fetchError) throw fetchError;
-  if (!participants?.length) throw new Error('접수된 참가자가 없습니다.');
-
-  const groups = createPrayerGroups(participants as Participant[], targetSize, mode);
-
-  // 이전 회차를 내리고 새 회차를 활성화합니다. (활성 회차는 항상 하나)
-  const { error: deactivateError } = await supabase
-    .from('match_rounds')
-    .update({ is_active: false })
-    .eq('is_active', true);
-  if (deactivateError) throw deactivateError;
-
-  const { data: round, error: roundError } = await supabase
-    .from('match_rounds')
-    .insert({ mode, target_size: targetSize, is_active: true })
-    .select('id')
-    .single();
-  if (roundError) throw roundError;
-
-  const { data: insertedGroups, error: groupError } = await supabase
-    .from('match_groups')
-    .insert(
-      groups.map((g) => ({ round_id: round.id, group_number: g.groupNumber })),
-    )
-    .select('id, group_number');
-  if (groupError) throw groupError;
-
-  const groupIdByNumber = new Map(
-    insertedGroups.map((g) => [g.group_number as number, g.id as string]),
-  );
-  const memberRows = groups.flatMap((g) =>
-    g.members.map((member, seq) => ({
-      group_id: groupIdByNumber.get(g.groupNumber)!,
-      participant_id: member.id,
-      seq,
-    })),
-  );
-
-  const { error: memberError } = await supabase.from('match_members').insert(memberRows);
-  if (memberError) throw memberError;
-
-  revalidatePath('/admin');
-  revalidatePath('/display');
-}
-
-/** 확정된 매칭을 화면에서 내립니다. (참가자 명단은 유지) */
-export async function unpublishAction() {
-  await assertAdmin();
-
-  const supabase = createAdminClient();
-  const { error } = await supabase
-    .from('match_rounds')
-    .update({ is_active: false })
-    .eq('is_active', true);
-  if (error) throw error;
-
-  revalidatePath('/admin');
-  revalidatePath('/display');
-}
-
-export async function deleteParticipantAction(formData: FormData) {
-  await assertAdmin();
-
-  const id = String(formData.get('id') ?? '');
-  if (!id) throw new Error('참가자 ID 가 없습니다.');
-
-  const supabase = createAdminClient();
-  const { error } = await supabase.from('participants').delete().eq('id', id);
-  if (error) throw error;
-
-  revalidatePath('/admin');
-  revalidatePath('/display');
-}
-
-/**
- * 행사 종료 후 개인정보 일괄 삭제.
- * 참가자와 매칭 기록을 모두 지웁니다. (되돌릴 수 없음)
- */
-export async function resetAllAction(formData: FormData) {
-  await assertAdmin();
-
-  if (String(formData.get('confirm') ?? '') !== '삭제') {
-    throw new Error('확인 문구가 일치하지 않습니다.');
+async function mutate(formData: FormData, operation: string, payload = {}) {
+  try {
+    await assertAdmin();
+    await eventCommand(Number(formData.get('revision')), operation, payload);
+    revalidatePath('/admin'); revalidatePath('/display'); revalidatePath('/me', 'layout');
+    return {};
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : '처리하지 못했습니다.' };
   }
+}
 
-  const supabase = createAdminClient();
-  // match_groups/match_members 는 ON DELETE CASCADE 로 함께 지워집니다.
-  const { error: roundError } = await supabase
-    .from('match_rounds')
-    .delete()
-    .not('id', 'is', null);
-  if (roundError) throw roundError;
-
-  const { error: participantError } = await supabase
-    .from('participants')
-    .delete()
-    .not('id', 'is', null);
-  if (participantError) throw participantError;
-
-  revalidatePath('/admin');
-  revalidatePath('/display');
+export async function runMatchingAction(formData: FormData) {
+  try {
+    await assertAdmin();
+    const targetSize = Number(formData.get('target_size')) as TargetSize;
+    const mode = String(formData.get('mode')) as MatchMode;
+    if (!TARGET_SIZES.includes(targetSize) || !['team', 'random'].includes(mode)) return { error: '매칭 설정을 확인해 주세요.' };
+    const snapshot = await getEventSnapshot();
+    if (!snapshot.participants.length) return { error: '접수된 참가자가 없습니다.' };
+    if (snapshot.round && formData.get('confirm') !== '재편성') return { error: '기존 조를 모두 바꾸려면 재편성이라고 입력해 주세요.' };
+    const groups = createPrayerGroups(snapshot.participants, targetSize, mode);
+    return mutate(formData, 'publish', {
+      target: targetSize, mode, confirm: formData.get('confirm'),
+      assignments: groups.flatMap(g => g.members.map(m => ({ participant_id: m.id, group_number: g.groupNumber }))),
+    });
+  } catch { return { error: '매칭을 준비하지 못했습니다. 새로고침 후 다시 시도해 주세요.' }; }
+}
+export async function drawAction(formData: FormData) { return mutate(formData, 'draw'); }
+export async function unpublishAction(formData: FormData) { return mutate(formData, 'unpublish'); }
+export async function deleteParticipantAction(formData: FormData) { return mutate(formData, 'delete', { id: formData.get('id') }); }
+export async function resetAllAction(formData: FormData) {
+  if (formData.get('confirm') !== '삭제') return { error: '삭제라고 입력해 주세요.' };
+  return mutate(formData, 'reset', { confirm: '삭제' });
 }

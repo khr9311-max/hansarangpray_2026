@@ -2,7 +2,8 @@ import { headers } from 'next/headers';
 import DisplayStage from './DisplayStage';
 import RealtimeRefresher from '@/components/RealtimeRefresher';
 import KeepWindowOpenNotice from '@/components/KeepWindowOpenNotice';
-import { getActiveRound, getParticipants } from '@/lib/queries';
+import { getEventSnapshot } from '@/lib/event';
+import { isAdmin } from '@/lib/auth';
 import { createQrMatrix } from '@/lib/qr';
 import { toDisplaySnapshot } from '@/lib/display';
 
@@ -24,18 +25,15 @@ async function signupUrl(): Promise<string> {
 }
 
 export default async function DisplayPage() {
-  const [participants, round, url] = await Promise.all([
-    getParticipants(),
-    getActiveRound(),
-    signupUrl(),
-  ]);
+  const [snapshot, url, admin] = await Promise.all([getEventSnapshot(), signupUrl(), isAdmin()]);
+  const { participants, round, revision, drawStartedAt, serverTime } = snapshot;
   const qr = createQrMatrix(url);
 
   return (
-    <main className="flex min-h-dvh flex-col bg-slate-950 px-8 py-6 text-white">
+    <main className="flex min-h-dvh flex-col bg-slate-950 px-4 py-6 sm:px-8 text-white">
       <RealtimeRefresher
         channel="display"
-        tables={['participants', 'match_rounds', 'match_groups', 'match_members']}
+        tables={['match_control', 'participants', 'match_rounds', 'match_groups', 'match_members']}
       />
 
       <header className="mb-5 flex items-baseline justify-between">
@@ -52,7 +50,7 @@ export default async function DisplayPage() {
             )}
           </h1>
         </div>
-        <p className="text-sm text-white/25">F11 전체화면</p>
+        <p className="hidden text-sm text-white/25 sm:block">F11 전체화면</p>
       </header>
 
       <KeepWindowOpenNotice display />
@@ -70,6 +68,7 @@ export default async function DisplayPage() {
       */}
       <DisplayStage
         qr={qr}
+        revision={revision} drawStartedAt={drawStartedAt} serverTime={serverTime} admin={admin}
         {...toDisplaySnapshot(participants, round)}
       />
     </main>

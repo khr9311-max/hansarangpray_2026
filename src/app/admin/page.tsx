@@ -1,10 +1,14 @@
 import Link from 'next/link';
+import ActionForm from '@/components/ActionForm';
+import { getEventSnapshot } from '@/lib/event';
+import { editToken } from '@/lib/participant-access';
 import LoginForm from './LoginForm';
 import RealtimeRefresher from '@/components/RealtimeRefresher';
 import { isAdmin } from '@/lib/auth';
-import { countByTeam, getActiveRound, getParticipants } from '@/lib/queries';
+import { countByTeam } from '@/lib/queries';
 import { MATCH_MODE_LABEL, TARGET_SIZES } from '@/lib/types';
 import {
+  drawAction,
   deleteParticipantAction,
   logoutAction,
   resetAllAction,
@@ -33,14 +37,14 @@ export default async function AdminPage() {
     );
   }
 
-  const [participants, round] = await Promise.all([getParticipants(), getActiveRound()]);
+  const { participants, round, revision } = await getEventSnapshot();
   const byTeam = countByTeam(participants);
 
   return (
     <main className="min-h-dvh bg-slate-50 px-5 py-8">
       <RealtimeRefresher
         channel="admin"
-        tables={['participants', 'match_rounds', 'match_groups', 'match_members']}
+        tables={['match_control', 'participants', 'match_rounds', 'match_groups', 'match_members']}
       />
 
       <div className="mx-auto w-full max-w-5xl space-y-6">
@@ -51,13 +55,12 @@ export default async function AdminPage() {
             </p>
             <h1 className="text-2xl font-bold text-slate-900">2026 짝기도 매칭 관리</h1>
           </div>
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
             <Link
               href="/display"
-              target="_blank"
               className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-medium text-slate-700"
             >
-              송출 화면 열기 ↗
+              휴대폰·PC 결과 화면 열기 →
             </Link>
             <a
               href="/api/admin/export"
@@ -99,15 +102,20 @@ export default async function AdminPage() {
 
         {/* 매칭 실행 */}
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
-          <h2 className="text-sm font-semibold text-slate-500">매칭 실행</h2>
-          <p className="mt-1 text-xs text-slate-400">
-            누르는 즉시 새 매칭이 확정되어 송출 화면에 반영됩니다. 이전 매칭은 자동으로
-            내려갑니다.
-          </p>
-
+          <h2 className="text-sm font-semibold text-slate-500">{round ? '기존 조 유지 중' : '첫 조 편성'}</h2>
+          <p className="mt-2 text-sm text-slate-600">새 신청자는 기존 조 중 인원이 적은 조에 자동 합류합니다. 기존 조원과 조 번호는 바뀌지 않습니다.</p>
+          {round && <ActionForm action={drawAction} className="mt-4">
+            <input type="hidden" name="revision" value={revision} />
+            <button className="w-full rounded-xl bg-brand-600 p-4 font-bold text-white">모든 화면에서 추첨·결과 공개</button>
+            <p className="mt-2 text-xs text-slate-500">폰에서 누르면 PC 송출 화면도 함께 바뀝니다. 조 편성은 그대로 유지됩니다.</p>
+          </ActionForm>}
+          <details open={round ? undefined : true} key={round?.id ?? 'initial'} className="mt-4">
+          <summary className="cursor-pointer font-semibold text-slate-700">{round ? '전체 조를 새로 편성하기 (기존 조 변경)' : '인원과 방식 선택'}</summary>
           <div className="mt-4 grid gap-2 sm:grid-cols-3">
             {MATCH_OPTIONS.map((option) => (
-              <form key={`${option.mode}-${option.targetSize}`} action={runMatchingAction}>
+              <ActionForm key={`${option.mode}-${option.targetSize}`} action={runMatchingAction}>
+                <input type="hidden" name="revision" value={revision} />
+                {round && <input name="confirm" required placeholder="재편성 입력" aria-label={`${option.hint} ${option.label} 재편성 확인`} className="mb-2 w-full rounded-lg border p-2 text-sm" />}
                 <input type="hidden" name="mode" value={option.mode} />
                 <input type="hidden" name="target_size" value={option.targetSize} />
                 <button
@@ -128,10 +136,11 @@ export default async function AdminPage() {
                     {option.hint}
                   </span>
                 </button>
-              </form>
+              </ActionForm>
             ))}
           </div>
 
+          </details>
           <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-5">
             {round ? (
               <>
@@ -139,14 +148,14 @@ export default async function AdminPage() {
                   현재 송출 중 · <b>{round.groups.length}조</b> ·{' '}
                   {MATCH_MODE_LABEL[round.mode]} / {round.targetSize}인 기준
                 </p>
-                <form action={unpublishAction}>
+                <ActionForm action={unpublishAction}><input type="hidden" name="revision" value={revision} />
                   <button
                     type="submit"
                     className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600"
                   >
                     화면에서 내리기
                   </button>
-                </form>
+                </ActionForm>
               </>
             ) : (
               <p className="text-sm text-slate-400">아직 확정된 매칭이 없습니다.</p>
@@ -205,13 +214,15 @@ export default async function AdminPage() {
                     <tr key={participant.id}>
                       <td className="py-3 pr-4 font-medium text-slate-900">
                         {participant.name}
+                        <Link href={`/edit/${participant.id}`} className="mt-1 block text-xs text-brand-600 underline">정보 수정</Link>
+                        <Link href={`/edit/${participant.id}?token=${editToken(participant.id)}`} className="mt-1 block text-xs text-slate-500 underline">본인 전달용 수정 링크</Link>
                       </td>
                       <td className="py-3 pr-4 text-slate-500">{participant.team}</td>
                       <td className="max-w-md py-3 pr-4 text-slate-600">
                         {participant.prayer_request}
                       </td>
                       <td className="py-3 text-right">
-                        <form action={deleteParticipantAction}>
+                        <ActionForm action={deleteParticipantAction}><input type="hidden" name="revision" value={revision} />
                           <input type="hidden" name="id" value={participant.id} />
                           <button
                             type="submit"
@@ -219,7 +230,7 @@ export default async function AdminPage() {
                           >
                             삭제
                           </button>
-                        </form>
+                        </ActionForm>
                       </td>
                     </tr>
                   ))}
@@ -235,7 +246,7 @@ export default async function AdminPage() {
           <p className="mt-1 text-xs text-red-600/80">
             참가자와 매칭 기록을 모두 지웁니다. 되돌릴 수 없으니 CSV 를 먼저 내려받으세요.
           </p>
-          <form action={resetAllAction} className="mt-4 flex flex-wrap gap-2">
+          <ActionForm action={resetAllAction} className="mt-4 flex flex-wrap gap-2"><input type="hidden" name="revision" value={revision} />
             <input
               name="confirm"
               required
@@ -248,7 +259,7 @@ export default async function AdminPage() {
             >
               전체 삭제
             </button>
-          </form>
+          </ActionForm>
         </section>
       </div>
     </main>

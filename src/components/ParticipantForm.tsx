@@ -4,7 +4,7 @@ import { useActionState, useEffect, useState } from 'react';
 import { useFormStatus } from 'react-dom';
 import Link from 'next/link';
 import { submitParticipant, type SubmitState } from '@/app/actions';
-import { TEAMS } from '@/lib/types';
+import { TEAMS, type Participant } from '@/lib/types';
 
 const initialState: SubmitState = { status: 'idle', message: '' };
 
@@ -54,7 +54,7 @@ function forget() {
   }
 }
 
-function SubmitButton({ shareInGroup }: { shareInGroup: boolean }) {
+function SubmitButton({ shareInGroup, editing }: { shareInGroup: boolean; editing?: boolean }) {
   const { pending } = useFormStatus();
   return (
     <button
@@ -62,7 +62,7 @@ function SubmitButton({ shareInGroup }: { shareInGroup: boolean }) {
       disabled={pending}
       className="w-full rounded-xl bg-brand-600 px-4 py-4 text-lg font-semibold text-white transition active:scale-[0.99] disabled:opacity-50"
     >
-      {pending ? '보내는 중…' : shareInGroup ? '참가 신청하기' : '기도제목 보내기'}
+      {pending ? '저장 중…' : editing ? '수정 내용 저장하기' : shareInGroup ? '참가 신청하기' : '기도제목 보내기'}
     </button>
   );
 }
@@ -82,24 +82,30 @@ function StartOverButton({ onClick }: { onClick: () => void }) {
 
 function MyPairLink({ id }: { id: string }) {
   return (
+    <>
+    <Link href={`/edit/${id}`} className="mt-5 inline-block w-full rounded-xl border border-brand-600 px-4 py-3 text-sm font-semibold text-brand-600">내 신청 정보 수정하기</Link>
     <Link
       href={`/me/${id}`}
       className="mt-6 inline-block w-full rounded-xl bg-slate-900 px-4 py-3.5 text-sm font-semibold text-white"
     >
       내 기도짝 확인하기 →
-    </Link>
+    </Link></>
   );
 }
 
-export default function ParticipantForm() {
+export default function ParticipantForm({ participant, editToken = '' }: { participant?: Participant; editToken?: string }) {
   const [state, formAction] = useActionState(submitParticipant, initialState);
 
   // undefined = 아직 브라우저 저장소를 확인하기 전(서버 렌더 시점).
   // 이 구분이 없으면 이미 신청한 사람에게도 빈 폼이 한 번 번쩍 보였다가 바뀌는데,
   // 그 순간에 제출 버튼을 눌러 버리면 중복 신청이 됩니다.
   const [savedId, setSavedId] = useState<string | null | undefined>(undefined);
+  const [name, setName] = useState(participant?.name ?? '');
+  const [team, setTeam] = useState(participant?.team ?? '');
+  const [prayer, setPrayer] = useState(participant?.prayer_request ?? '');
+  const [editVersion, setEditVersion] = useState(participant?.edit_version ?? 0);
   const [startingOver, setStartingOver] = useState(false);
-  const [shareInGroup, setShareInGroup] = useState(false);
+  const [shareInGroup, setShareInGroup] = useState(participant?.prayer_request === '기도제목은 매칭된 조 안에서 직접 나눌게요.');
 
   useEffect(() => {
     setSavedId(readRemembered());
@@ -110,17 +116,17 @@ export default function ParticipantForm() {
     remember(state.participantId);
     setSavedId(state.participantId);
     setStartingOver(false);
-  }, [state.status, state.participantId]);
+  }, [state]);
 
   function startOver() {
     forget();
     setSavedId(null);
     setStartingOver(true);
-    setShareInGroup(false);
+    setShareInGroup(false); setName(''); setTeam(''); setPrayer('');
   }
 
   // 저장소를 읽기 전에는 폼도 안내도 띄우지 않습니다.
-  if (savedId === undefined) {
+  if (!participant && savedId === undefined) {
     return (
       <div
         aria-hidden
@@ -147,17 +153,18 @@ export default function ParticipantForm() {
         </p>
 
         <MyPairLink id={state.participantId} />
+        {participant && <button type="button" className="mt-4 text-sm underline" onClick={() => { setEditVersion(participant.edit_version); setStartingOver(true); }}>다시 수정하기</button>}
         <p className="mt-3 text-xs text-slate-400">
           매칭이 확정되면 이 링크에서 기도짝의 기도제목을 볼 수 있어요.
         </p>
 
-        <StartOverButton onClick={startOver} />
+        {!participant && <StartOverButton onClick={startOver} />}
       </div>
     );
   }
 
   // 2) 예전에 이 기기에서 신청한 기록이 남아 있는 경우 (새로고침·재방문)
-  if (!startingOver && savedId) {
+  if (!participant && !startingOver && savedId) {
     return (
       <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
         <div className="mb-4 text-5xl">✅</div>
@@ -170,7 +177,7 @@ export default function ParticipantForm() {
 
         <MyPairLink id={savedId} />
 
-        <StartOverButton onClick={startOver} />
+        {!participant && <StartOverButton onClick={startOver} />}
       </div>
     );
   }
@@ -178,8 +185,16 @@ export default function ParticipantForm() {
   return (
     <form
       action={formAction}
+      onReset={event => event.preventDefault()}
       className="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
     >
+      {participant && <>
+        <h2 className="text-xl font-bold">내 신청 정보 수정</h2>
+        <p className="text-sm text-slate-500">이름·팀·기도제목을 바꿔도 기존 조는 유지됩니다.</p>
+        <input type="hidden" name="participant_id" value={participant.id} />
+        <input type="hidden" name="edit_version" value={editVersion} />
+        <input type="hidden" name="edit_token" value={editToken} />
+      </>}
       <div>
         <label htmlFor="name" className="mb-2 block text-sm font-semibold text-slate-700">
           이름
@@ -187,6 +202,7 @@ export default function ParticipantForm() {
         <input
           id="name"
           name="name"
+          value={name} onChange={event => setName(event.target.value)}
           type="text"
           required
           maxLength={20}
@@ -204,7 +220,7 @@ export default function ParticipantForm() {
           id="team"
           name="team"
           required
-          defaultValue=""
+          value={team} onChange={event => setTeam(event.target.value)}
           className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
         >
           <option value="" disabled>
@@ -239,6 +255,7 @@ export default function ParticipantForm() {
         <textarea
           id="prayer_request"
           name="prayer_request"
+          value={prayer} onChange={event => setPrayer(event.target.value)}
           required={!shareInGroup}
           disabled={shareInGroup}
           rows={5}
@@ -258,7 +275,7 @@ export default function ParticipantForm() {
         </p>
       )}
 
-      <SubmitButton shareInGroup={shareInGroup} />
+      <SubmitButton editing={!!participant} shareInGroup={shareInGroup} />
     </form>
   );
 }

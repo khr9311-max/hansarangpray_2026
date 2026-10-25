@@ -195,25 +195,7 @@ export function addLateParticipants(
     choices[0].members.push(member);
   }
 
-  // 먼저 기존 조의 정원 안쪽 빈자리를 채웁니다.
-  while (pending.length && groups.some((group) => group.members.length < targetSize)) {
-    addToGroup(pending.shift()!, groups.filter((group) => group.members.length < targetSize));
-  }
-
-  if (pending.length && groups.length) {
-    const extraSlots = groups.filter((group) => group.members.length < targetSize + 1);
-    if (pending.length <= extraSlots.length || pending.length === 1) {
-      // 한 명만 남으면 혼자 새 조를 만들지 않고 가장 작은 기존 조에 합류합니다.
-      while (pending.length) addToGroup(pending.shift()!, groups);
-    }
-  }
-
-  if (pending.length) {
-    const lastNumber = Math.max(0, ...groups.map((group) => group.groupNumber));
-    groups.push(...createPrayerGroups(pending, targetSize, mode).map((group) => ({
-      ...group,
-      groupNumber: lastNumber + group.groupNumber,
-    })));
-  }
+  if (!groups.length) return createPrayerGroups(pending, targetSize, mode);
+  while (pending.length) addToGroup(pending.shift()!, groups);
   return groups;
 }

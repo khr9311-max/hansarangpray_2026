@@ -1,4 +1,5 @@
 export type Participant = {
+  edit_version: number;
   id: string;
   name: string;
   team: string;

@@ -1,6 +1,8 @@
 'use server';
 
-import { createServerClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/server';
+import { revalidatePath } from 'next/cache';
+import { allowParticipantEdit, rememberParticipantAccess } from '@/lib/participant-access';
 import { TEAMS } from '@/lib/types';
 
 export type SubmitState = {
@@ -16,6 +18,10 @@ export async function submitParticipant(
   _prevState: SubmitState,
   formData: FormData,
 ): Promise<SubmitState> {
+  const id = String(formData.get('participant_id') ?? '');
+  if (id && !(await allowParticipantEdit(id, String(formData.get('edit_token') ?? '')))) {
+    return { status: 'error', message: '수정 권한이 만료되었습니다. 운영자에게 본인용 수정 링크를 요청해 주세요.' };
+  }
   const name = String(formData.get('name') ?? '').trim();
   const team = String(formData.get('team') ?? '').trim();
   const shareInGroup = formData.get('share_in_group') === 'on';
@@ -41,12 +47,11 @@ export async function submitParticipant(
   }
 
   try {
-    const supabase = createServerClient();
-    const { data, error } = await supabase
-      .from('participants')
-      .insert({ name, team, prayer_request: prayerRequest })
-      .select('id')
-      .single();
+    const supabase = createAdminClient();
+    const { data, error } = id
+      ? await supabase.rpc('prayer_edit', { p_id: id, p_version: Number(formData.get('edit_version')), p_name: name, p_team: team, p_prayer: prayerRequest })
+      : await supabase.rpc('prayer_register', { p_name: name, p_team: team, p_prayer: prayerRequest });
+    if (error?.code === '40001') return { status: 'error', message: '다른 화면에서 이미 수정되었습니다. 새로고침 후 최신 내용을 확인해 주세요.' };
 
     if (error || !data) {
       console.error('[submitParticipant]', error);
@@ -56,10 +61,14 @@ export async function submitParticipant(
       };
     }
 
+    const participantId = id || String(data);
+    await rememberParticipantAccess(participantId);
+    revalidatePath('/admin'); revalidatePath('/display'); revalidatePath('/me', 'layout');
+    revalidatePath(`/edit/${participantId}`);
     return {
       status: 'success',
-      message: shareInGroup ? '참가 신청이 접수되었습니다.' : '기도제목이 접수되었습니다.',
-      participantId: data.id as string,
+      message: id ? '신청 정보가 수정되었습니다. 기존 조는 그대로 유지됩니다.' : shareInGroup ? '참가 신청이 접수되었습니다.' : '기도제목이 접수되었습니다.',
+      participantId,
     };
   } catch (err) {
     console.error('[submitParticipant exception]', err);

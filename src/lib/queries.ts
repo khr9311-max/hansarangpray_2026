@@ -1,4 +1,5 @@
 import 'server-only';
+import { getEventSnapshot } from './event';
 
 import { createServerClient } from './supabase/server';
 import type { MatchMode, Participant, PrayerGroup, TargetSize } from './types';
@@ -11,70 +12,11 @@ export type ActiveRound = {
   groups: PrayerGroup[];
 };
 
-/** 현재 송출 중인(확정된) 매칭 회차를 조 단위로 가져옵니다. 없으면 null. */
-export async function getActiveRound(strict = false): Promise<ActiveRound | null> {
-  const supabase = createServerClient();
-
-  const { data: round, error: roundError } = await supabase
-    .from('match_rounds')
-    .select('id, mode, target_size, created_at')
-    .eq('is_active', true)
-    .maybeSingle();
-
-  // 송출 화면이 행사 중에 죽으면 안 되므로 던지지 않고 대기 화면으로 넘깁니다.
-  // 대신 스키마 미적용 같은 설정 오류가 조용히 묻히지 않도록 로그를 남깁니다.
-  if (roundError) {
-    if (strict) throw roundError;
-    console.error('[getActiveRound]', roundError);
-    return null;
-  }
-  if (!round) return null;
-
-  const { data: groups, error } = await supabase
-    .from('match_groups')
-    .select('group_number, match_members(seq, participants(*))')
-    .eq('round_id', round.id)
-    .order('group_number', { ascending: true });
-  if (error) {
-    if (strict) throw error;
-    console.error('[getActiveRound groups]', error);
-    return null;
-  }
-
-  return {
-    id: round.id,
-    mode: round.mode as MatchMode,
-    targetSize: round.target_size as TargetSize,
-    createdAt: round.created_at,
-    groups: (groups ?? []).map((group) => ({
-      groupNumber: group.group_number as number,
-      members: (group.match_members ?? [])
-        .slice()
-        .sort((a, b) => (a.seq as number) - (b.seq as number))
-        .map((m) => m.participants as unknown as Participant)
-        .filter(Boolean),
-    })),
-  };
+export async function getActiveRound(_strict = false): Promise<ActiveRound | null> {
+  return (await getEventSnapshot()).round;
 }
-
-export async function getParticipants(strict = false): Promise<Participant[]> {
-  try {
-    const supabase = createServerClient();
-    const { data, error } = await supabase
-      .from('participants')
-      .select('*')
-      .order('created_at', { ascending: false });
-    if (error) {
-      if (strict) throw error;
-      console.error('[getParticipants]', error);
-      return [];
-    }
-    return (data ?? []) as Participant[];
-  } catch (err) {
-    if (strict) throw err;
-    console.error('[getParticipants]', err);
-    return [];
-  }
+export async function getParticipants(_strict = false): Promise<Participant[]> {
+  return (await getEventSnapshot()).participants;
 }
 
 /** 개인 링크(`/me/[id]`)용. 본인 이름 표시에만 씁니다. */
