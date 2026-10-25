@@ -26,7 +26,7 @@ export const MATCH_MODE_LABEL: Record<MatchMode, string> = {
 
 export const TEAMS: string[] = (
   process.env.NEXT_PUBLIC_TEAMS ??
-  '영등포쪽방촌팀,단비팀,통일선교팀,운영팀,국장,교역자'
+  '영등포쪽방촌팀,단비팀,통일선교팀,전도팀,운영팀,국장,교역자'
 )
   .split(',')
   .map((s) => s.trim())
