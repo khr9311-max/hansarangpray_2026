@@ -128,7 +128,7 @@ const ATTEMPTS = 40;
 /**
  * 참가자 명단을 조로 나눕니다.
  * @param members    참가자 목록
- * @param targetSize 2~6인 1조
+ * @param targetSize 2~10인 1조
  * @param mode       팀 섞기(team) · 완전 랜덤(random)
  */
 export function createPrayerGroups(

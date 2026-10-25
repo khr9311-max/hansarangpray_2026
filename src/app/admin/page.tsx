@@ -105,7 +105,7 @@ export default async function AdminPage() {
             내려갑니다.
           </p>
 
-          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="mt-4 grid gap-2 sm:grid-cols-3">
             {MATCH_OPTIONS.map((option) => (
               <form key={`${option.mode}-${option.targetSize}`} action={runMatchingAction}>
                 <input type="hidden" name="mode" value={option.mode} />
