@@ -14,8 +14,8 @@ function shuffle<T>(input: T[]): T[] {
  * 총 n명을 목표 인원 기준으로 나눌 때의 "조별 인원 배열"을 먼저 계산합니다.
  *
  * 목표 인원으로 딱 떨어지는 조를 만들고, 남는 사람은 조를 따로 만들지 않고
- * **깍두기로 기존 조에 한 명씩 끼워 넣습니다.** 그래서 정원에 미달하는 조는
- * 절대 생기지 않고, 남는 인원 수만큼만 한 명 더 많은 조가 됩니다.
+ * **깍두기로 기존 조에 한 명씩 끼워 넣습니다.** 남는 사람이 조 수보다 많으면
+ * 그 사람들로 별도 조를 만듭니다. 전체 인원이 정원보다 적으면 한 조가 됩니다.
  *
  *   2인 기준: 7명 → 3,2,2      (1명이 1조에 합류)
  *   3인 기준: 7명 → 4,3        (1명이 1조에 합류)
@@ -36,8 +36,8 @@ export function computeGroupSizes(n: number, targetSize: TargetSize): number[] {
     return sizes;
   }
 
-  // 남는 사람이 조 수보다 많은 경우(3인 기준 5명뿐입니다).
-  // 한 조에 다 몰아넣어 5인 조를 만드느니 작은 조를 하나 두는 편이 낫습니다.
+  // 남는 사람이 조 수보다 많은 경우(예: 3인 기준 5명, 6인 기준 10명).
+  // 한 조에 다 몰아넣기보다 남은 사람들로 작은 조를 하나 둡니다.
   sizes.push(leftover);
   return sizes;
 }
@@ -128,7 +128,7 @@ const ATTEMPTS = 40;
 /**
  * 참가자 명단을 조로 나눕니다.
  * @param members    참가자 목록
- * @param targetSize 2인 1조 / 3인 1조
+ * @param targetSize 2~6인 1조
  * @param mode       팀 섞기(team) · 완전 랜덤(random)
  */
 export function createPrayerGroups(

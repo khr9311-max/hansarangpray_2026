@@ -3,7 +3,7 @@ import LoginForm from './LoginForm';
 import RealtimeRefresher from '@/components/RealtimeRefresher';
 import { isAdmin } from '@/lib/auth';
 import { countByTeam, getActiveRound, getParticipants } from '@/lib/queries';
-import { MATCH_MODE_LABEL, type MatchMode, type TargetSize } from '@/lib/types';
+import { MATCH_MODE_LABEL, TARGET_SIZES } from '@/lib/types';
 import {
   deleteParticipantAction,
   logoutAction,
@@ -14,20 +14,15 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-const MATCH_OPTIONS: {
-  mode: MatchMode;
-  targetSize: TargetSize;
-  label: string;
-  hint: string;
-  primary: boolean;
-}[] = [
-  { mode: 'team', targetSize: 2, label: '2인 1조', hint: '팀 섞기', primary: true },
-  { mode: 'team', targetSize: 3, label: '3인 1조', hint: '팀 섞기', primary: true },
-  { mode: 'team', targetSize: 4, label: '4인 1조', hint: '팀 섞기', primary: true },
-  { mode: 'random', targetSize: 2, label: '2인 1조', hint: '완전 랜덤', primary: false },
-  { mode: 'random', targetSize: 3, label: '3인 1조', hint: '완전 랜덤', primary: false },
-  { mode: 'random', targetSize: 4, label: '4인 1조', hint: '완전 랜덤', primary: false },
-];
+const MATCH_OPTIONS = (['team', 'random'] as const).flatMap((mode) =>
+  TARGET_SIZES.map((targetSize) => ({
+    mode,
+    targetSize,
+    label: `${targetSize}인 1조`,
+    hint: MATCH_MODE_LABEL[mode],
+    primary: mode === 'team',
+  })),
+);
 
 export default async function AdminPage() {
   if (!(await isAdmin())) {
@@ -110,7 +105,7 @@ export default async function AdminPage() {
             내려갑니다.
           </p>
 
-          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
             {MATCH_OPTIONS.map((option) => (
               <form key={`${option.mode}-${option.targetSize}`} action={runMatchingAction}>
                 <input type="hidden" name="mode" value={option.mode} />

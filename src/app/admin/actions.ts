@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { assertAdmin, signIn, signOut } from '@/lib/auth';
 import { createAdminClient } from '@/lib/supabase/server';
 import { createPrayerGroups } from '@/lib/matching';
-import type { MatchMode, Participant, TargetSize } from '@/lib/types';
+import { TARGET_SIZES, type MatchMode, type Participant, type TargetSize } from '@/lib/types';
 
 export type AdminState = { status: 'idle' | 'error'; message: string };
 
@@ -31,7 +31,7 @@ export async function runMatchingAction(formData: FormData) {
 
   const targetSize = Number(formData.get('target_size')) as TargetSize;
   const mode = String(formData.get('mode')) as MatchMode;
-  if (![2, 3, 4].includes(targetSize)) throw new Error('조 인원이 올바르지 않습니다.');
+  if (!TARGET_SIZES.includes(targetSize)) throw new Error('조 인원이 올바르지 않습니다.');
   if (!['team', 'random'].includes(mode)) throw new Error('매칭 방식이 올바르지 않습니다.');
 
   const supabase = createAdminClient();

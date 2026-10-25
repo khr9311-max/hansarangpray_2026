@@ -21,7 +21,7 @@ create index if not exists participants_created_at_idx
 create table if not exists public.match_rounds (
   id           uuid primary key default gen_random_uuid(),
   mode         text not null,              -- 'team' | 'random'
-  target_size  smallint not null,          -- 2 | 3 | 4
+  target_size  smallint not null,          -- 2 | 3 | 4 | 5 | 6
   is_active    boolean not null default false,
   created_at   timestamptz not null default now()
 );

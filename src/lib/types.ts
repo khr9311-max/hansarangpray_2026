@@ -11,7 +11,8 @@ export type MatchMode =
   | 'team'    // 같은 팀을 최대한 피함 (기본값)
   | 'random'; // 아무 조건 없이 완전 랜덤
 
-export type TargetSize = 2 | 3 | 4;
+export const TARGET_SIZES = [2, 3, 4, 5, 6] as const;
+export type TargetSize = (typeof TARGET_SIZES)[number];
 
 export type PrayerGroup = {
   groupNumber: number;

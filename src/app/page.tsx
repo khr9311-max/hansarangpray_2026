@@ -1,4 +1,5 @@
 import ParticipantForm from '@/components/ParticipantForm';
+import KeepWindowOpenNotice from '@/components/KeepWindowOpenNotice';
 
 export default function HomePage() {
   return (
@@ -18,6 +19,7 @@ export default function HomePage() {
           </p>
         </header>
 
+        <KeepWindowOpenNotice />
         <ParticipantForm />
       </div>
     </main>

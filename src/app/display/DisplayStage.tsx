@@ -206,8 +206,8 @@ export default function DisplayStage({
   const drawing = phase === 'drawing';
 
   return (
-    <div className="flex min-h-[78dvh] flex-col">
-      <div className="flex flex-1 gap-6">
+    <div className="flex min-h-[28rem] flex-1 flex-col">
+      <div className="flex min-h-[22rem] flex-1 gap-6">
       {/* 이름표가 떠다니는 통 */}
       <div
         data-shake={drawing ? '' : undefined}

@@ -1,6 +1,7 @@
 import { headers } from 'next/headers';
 import DisplayStage from './DisplayStage';
 import RealtimeRefresher from '@/components/RealtimeRefresher';
+import KeepWindowOpenNotice from '@/components/KeepWindowOpenNotice';
 import { getActiveRound, getParticipants } from '@/lib/queries';
 import { createQrMatrix } from '@/lib/qr';
 
@@ -52,6 +53,8 @@ export default async function DisplayPage() {
         </div>
         <p className="text-sm text-white/25">F11 전체화면</p>
       </header>
+
+      <KeepWindowOpenNotice display />
 
       {/*
         화면 렌더에는 이름만 쓰지만, 클라이언트 컴포넌트에 넘기는 값은
