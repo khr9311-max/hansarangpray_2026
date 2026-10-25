@@ -18,7 +18,10 @@ export async function submitParticipant(
 ): Promise<SubmitState> {
   const name = String(formData.get('name') ?? '').trim();
   const team = String(formData.get('team') ?? '').trim();
-  const prayerRequest = String(formData.get('prayer_request') ?? '').trim();
+  const shareInGroup = formData.get('share_in_group') === 'on';
+  const prayerRequest = shareInGroup
+    ? '기도제목은 매칭된 조 안에서 직접 나눌게요.'
+    : String(formData.get('prayer_request') ?? '').trim();
 
   if (!name || !team || !prayerRequest) {
     return { status: 'error', message: '모든 항목을 입력해 주세요.' };
@@ -55,7 +58,7 @@ export async function submitParticipant(
 
     return {
       status: 'success',
-      message: '기도제목이 접수되었습니다.',
+      message: shareInGroup ? '참가 신청이 접수되었습니다.' : '기도제목이 접수되었습니다.',
       participantId: data.id as string,
     };
   } catch (err) {

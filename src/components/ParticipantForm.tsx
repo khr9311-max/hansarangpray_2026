@@ -54,7 +54,7 @@ function forget() {
   }
 }
 
-function SubmitButton() {
+function SubmitButton({ shareInGroup }: { shareInGroup: boolean }) {
   const { pending } = useFormStatus();
   return (
     <button
@@ -62,7 +62,7 @@ function SubmitButton() {
       disabled={pending}
       className="w-full rounded-xl bg-brand-600 px-4 py-4 text-lg font-semibold text-white transition active:scale-[0.99] disabled:opacity-50"
     >
-      {pending ? '보내는 중…' : '기도제목 보내기'}
+      {pending ? '보내는 중…' : shareInGroup ? '참가 신청하기' : '기도제목 보내기'}
     </button>
   );
 }
@@ -99,6 +99,7 @@ export default function ParticipantForm() {
   // 그 순간에 제출 버튼을 눌러 버리면 중복 신청이 됩니다.
   const [savedId, setSavedId] = useState<string | null | undefined>(undefined);
   const [startingOver, setStartingOver] = useState(false);
+  const [shareInGroup, setShareInGroup] = useState(false);
 
   useEffect(() => {
     setSavedId(readRemembered());
@@ -115,6 +116,7 @@ export default function ParticipantForm() {
     forget();
     setSavedId(null);
     setStartingOver(true);
+    setShareInGroup(false);
   }
 
   // 저장소를 읽기 전에는 폼도 안내도 띄우지 않습니다.
@@ -223,14 +225,26 @@ export default function ParticipantForm() {
         >
           기도제목
         </label>
+        <label className="mb-3 flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-relaxed text-slate-700">
+          <input
+            type="checkbox"
+            name="share_in_group"
+            checked={shareInGroup}
+            onChange={(event) => setShareInGroup(event.target.checked)}
+            aria-controls="prayer_request"
+            className="mt-1 h-4 w-4 shrink-0 accent-brand-600"
+          />
+          <span>기도제목을 입력하지 않고 매칭된 조 안에서 직접 나눌래요</span>
+        </label>
         <textarea
           id="prayer_request"
           name="prayer_request"
-          required
+          required={!shareInGroup}
+          disabled={shareInGroup}
           rows={5}
           maxLength={500}
-          placeholder="함께 기도하고 싶은 내용을 적어 주세요."
-          className="w-full resize-none rounded-xl border border-slate-300 px-4 py-3 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+          placeholder={shareInGroup ? '매칭된 조 안에서 기도제목을 직접 나눠 주세요.' : '함께 기도하고 싶은 내용을 적어 주세요.'}
+          className="w-full resize-none rounded-xl border border-slate-300 px-4 py-3 text-base outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:bg-slate-100 disabled:text-slate-400"
         />
         <p className="mt-2 text-xs text-slate-400">
           송출 화면에는 이름만 나갑니다. 기도제목은 매칭된 기도짝끼리만 개인 링크로 볼 수
@@ -244,7 +258,7 @@ export default function ParticipantForm() {
         </p>
       )}
 
-      <SubmitButton />
+      <SubmitButton shareInGroup={shareInGroup} />
     </form>
   );
 }
