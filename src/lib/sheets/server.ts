@@ -24,16 +24,19 @@ function backendUrl(): string {
 }
 
 /** Server-only transport. Never send the secret or the raw sheet to the browser. */
-export async function sheetRequest<T>(operation: string, payload: object = {}): Promise<T> {
+export async function sheetRequest<T>(operation: string, payload: object = {}, options: { timeoutMs?: number } = {}): Promise<T> {
   const url = backendUrl();
   const secret = process.env.GOOGLE_SHEETS_API_SECRET;
   if (!secret || secret.length < 32) throw new SheetsError('CONFIG', '구글시트 연결 비밀키가 설정되지 않았습니다.');
+  const timeoutMs = options.timeoutMs ?? 45000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 45000) throw new SheetsError('CONFIG', '저장소 연결 제한 시간이 올바르지 않습니다.');
+  const signal = AbortSignal.timeout(timeoutMs);
   let response: Response;
   try {
     response = await fetch(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ secret, operation, payload }),
-      cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(45000),
+      cache: 'no-store', redirect: 'follow', signal,
     });
   } catch {
     throw new SheetsError('CONNECTION', '구글시트 연결이 지연되었습니다. 잠시 후 다시 시도해 주세요.');
@@ -41,7 +44,10 @@ export async function sheetRequest<T>(operation: string, payload: object = {}): 
   if (!response.ok) throw new SheetsError('CONNECTION', '구글시트 서버에 연결하지 못했습니다.');
   let result: { ok: boolean; data?: T; error?: { code?: string; message?: string } };
   try { result = await response.json(); }
-  catch { throw new SheetsError('CONFIG', 'Apps Script 웹 앱의 배포와 접근 설정을 확인해 주세요.'); }
+  catch {
+    if (signal.aborted) throw new SheetsError('CONNECTION', '구글시트 연결이 지연되었습니다. 잠시 후 다시 시도해 주세요.');
+    throw new SheetsError('CONFIG', 'Apps Script 웹 앱의 배포와 접근 설정을 확인해 주세요.');
+  }
   if (result?.ok !== true) {
     throw new SheetsError(String(result?.error?.code ?? 'STORAGE'), '구글시트 요청을 처리하지 못했습니다.');
   }

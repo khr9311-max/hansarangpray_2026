@@ -1,6 +1,9 @@
 import ParticipantForm from '@/components/ParticipantForm';
 import KeepWindowOpenNotice from '@/components/KeepWindowOpenNotice';
 
+// Allow an in-flight registration to confirm a retried Sheets commit.
+export const maxDuration = 180;
+
 export default function HomePage() {
   return (
     <main className="min-h-dvh bg-slate-50 px-5 py-10">

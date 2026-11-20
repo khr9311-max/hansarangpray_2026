@@ -146,7 +146,9 @@ npm run dev
 
 Sheets API의 기본 쓰기 한도는 **사용자·프로젝트당 분당 60회**, 프로젝트 전체는 분당 300회입니다. 여러 변경을 묶은 `batchUpdate`도 한 번의 쓰기로 계산합니다. 이 앱은 배포 소유자로 실행하므로 참가자마다 별도 한도를 받는 구조가 아닙니다. 실제 프로젝트의 한도는 Google Cloud 설정에서 확인합니다. [Google Sheets API 사용량 제한](https://developers.google.com/workspace/sheets/api/limits)
 
-Apps Script의 동시 실행 한도는 사용자당 30개, 스크립트당 1,000개이며 이 저장소의 데이터 작업은 잠금으로 순차 처리합니다. QR 신청이 한꺼번에 몰리면 대기·시간 초과·재시도가 발생할 수 있으므로 행사 전 예상 규모로 접수 흐름을 확인합니다. 공유 조회 캐시는 읽기 호출을 줄이지만 쓰기 한도를 늘리지는 않습니다. [Apps Script 할당량과 제한](https://developers.google.com/apps-script/guides/services/quotas)
+QR 신규 신청은 웹 서버 인스턴스마다 잠시 모아 최대 50건을 함께 보냅니다. Apps Script가 잠금을 잡고 신규 참가자, 신청 키, 행사 버전을 한 번의 `batchUpdate`로 저장합니다. 서버는 각 신청 키에 대응하는 참가자 ID를 확인한 뒤 완료 화면을 표시합니다. 일시적인 연결 오류나 잠금 경합은 같은 신청 키로 자동 재시도합니다. 이미 저장된 키는 기존 참가자 ID를 반환합니다. [Apps Script 할당량과 제한](https://developers.google.com/apps-script/guides/services/quotas)
+
+운영 업데이트 시 `submit_batch`를 포함한 Apps Script 버전을 기존 웹 앱 배포에 먼저 적용한 후 Next.js를 배포합니다. 이전 웹 버전의 단건 `submit`도 같은 저장 경로를 사용합니다.
 
 ## 기존 Supabase 데이터 이전
 

@@ -1,6 +1,7 @@
 'use server';
 
 import { sheetRequest, SheetsError } from '@/lib/sheets/server';
+import { submitToSheets } from '@/lib/sheets/submissions';
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { EVENT_CACHE_TAG } from '@/lib/event';
 import { allowParticipantEdit, rememberParticipantAccess, validEditToken } from '@/lib/participant-access';
@@ -57,7 +58,7 @@ export async function submitParticipant(
   try {
     const data = id
       ? await sheetRequest<number>('edit', { id, version: Number(formData.get('edit_version')), name, team, prayer: prayerRequest })
-      : await sheetRequest<string>('submit', { requestId: submissionId, name, team, prayer: prayerRequest });
+      : await submitToSheets({ requestId: submissionId, name, team, prayer: prayerRequest });
 
     if (data === null || data === undefined || data === '') {
       return {
@@ -82,6 +83,9 @@ export async function submitParticipant(
     };
   } catch (err) {
     if (err instanceof SheetsError && err.code === '40001') return { status: 'error', message: '다른 화면에서 이미 수정되었습니다. 새로고침 후 최신 내용을 확인해 주세요.' };
+    if (!id && err instanceof SheetsError && ['503', '429', 'CONNECTION'].includes(err.code)) {
+      return { status: 'error', message: '시트에서 접수 결과를 확인하지 못했어요. 잠시 후 이 화면에서 다시 보내 주세요.' };
+    }
     return {
       status: 'error',
       message: '서버 연결에 실패했습니다. 데이터베이스 상태를 확인해 주세요.',

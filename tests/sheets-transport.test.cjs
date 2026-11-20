@@ -79,6 +79,19 @@ test('HTML sign-in pages produce a deployment error instead of a successful stor
   await assert.rejects(h.sheetRequest('snapshot'), error => error instanceof h.SheetsError && error.code === 'CONFIG');
 });
 
+test('a batch may shorten the transport deadline, including while reading the response body', async () => {
+  const h = transport({ fetch: async () => ({ ok: true, json: () => new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('body stream aborted')), 10);
+  }) }) });
+  await assert.rejects(h.sheetRequest('snapshot', {}, { timeoutMs: 1 }), error => error instanceof h.SheetsError && error.code === 'CONNECTION');
+  assert.equal(h.calls[0][1].signal.aborted, true);
+  for (const timeoutMs of [0, -1, 45001, 1.5, NaN]) {
+    const invalid = transport();
+    await assert.rejects(invalid.sheetRequest('snapshot', {}, { timeoutMs }), error => error.code === 'CONFIG');
+    assert.equal(invalid.calls.length, 0);
+  }
+});
+
 test('backend errors retain their machine code without exposing private backend messages', async () => {
   for (const code of ['40001', 'P0002', '401', '503']) {
     const h = transport({ fetch: async () => new Response(JSON.stringify({ ok: false, error: { code, message: 'private participant detail' } })) });

@@ -11,13 +11,18 @@ function harness({ allowed = true, storageError = null } = {}) {
   class SheetsError extends Error {
     constructor(code, message = 'Storage request failed') { super(message); this.code = code; }
   }
+  async function storageCall(operation, payload) {
+    serverCallCount++;
+    calls.push({ operation, payload });
+    if (storageError) throw new SheetsError(storageError.code, storageError.message);
+    return operation === 'edit' ? payload.version + 1 : 'new-participant-id';
+  }
   const imports = {
     '@/lib/sheets/server': { SheetsError, async sheetRequest(operation, payload) {
-      serverCallCount++;
-      calls.push({ operation, payload });
-      if (storageError) throw new SheetsError(storageError.code, storageError.message);
-      return operation === 'edit' ? payload.version + 1 : 'new-participant-id';
+      assert.equal(operation, 'edit', 'new registrations must use the batching adapter');
+      return storageCall(operation, payload);
     } },
+    '@/lib/sheets/submissions': { submitToSheets: payload => storageCall('submit', payload) },
     'next/cache': { revalidatePath: (...args) => invalidated.push(args), revalidateTag: tag => invalidatedTags.push(tag) },
     '@/lib/event': { EVENT_CACHE_TAG: 'prayer-sheets-event' },
     '@/lib/prayer-access': { rememberPrayerAccess: async id => prayerAccessGranted.push(id) },
@@ -75,6 +80,21 @@ test('registration retry forwards the same private submission key', async () => 
   assert.equal((await h.run(data)).status, 'error');
   assert.equal(h.calls.length, 2);
   assert.deepEqual(h.calls.map(c => c.payload.requestId), [requestId, requestId]);
+});
+
+test('temporary registration failures preserve the request and tell the participant to resend from the same screen', async () => {
+  for (const code of ['503', '429', 'CONNECTION']) {
+    const h = harness({ storageError: { code } });
+    const data = form();
+    const result = await h.run(data);
+    assert.equal(result.status, 'error');
+    assert.match(result.message, /접수 결과를 확인하지 못했어요/);
+    assert.match(result.message, /이 화면에서 다시 보내/);
+    assert.equal(data.get('submission_id'), requestId);
+    assert.deepEqual(h.granted, []);
+    assert.deepEqual(h.prayerAccessGranted, []);
+    assert.deepEqual(h.invalidatedTags, []);
+  }
 });
 
 test('editing rejects unauthorized access before sending a storage request', async () => {

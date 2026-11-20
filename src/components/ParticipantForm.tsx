@@ -9,6 +9,23 @@ import { PRAYER_ACCESS_SECONDS } from '@/lib/prayer-weeks';
 
 const initialState: SubmitState = { status: 'idle', message: '' };
 
+// A lost HTTP response can follow a successful write. The same submission key
+// lets the next call recover that participant and its ownership cookies.
+export async function submitWithRecovery(previous: SubmitState, form: FormData): Promise<SubmitState> {
+  const registering = !form.get('participant_id');
+  try {
+    return await submitParticipant(previous, form);
+  } catch {
+    if (registering) {
+      await new Promise(resolve => setTimeout(resolve, 750 + Math.random() * 1500));
+      try { return await submitParticipant(previous, form); } catch { /* Show the recoverable form. */ }
+    }
+    return { status: 'error', message: registering
+      ? '접수 결과를 확인하지 못했어요. 연결을 확인한 뒤 이 화면에서 다시 보내 주세요.'
+      : '수정 결과를 확인하지 못했어요. 신청 정보를 다시 열어 확인해 주세요.' };
+  }
+}
+
 /**
  * 접수에 성공하면 이 기기에 참가자 id를 남겨 둡니다.
  * 이게 없으면 새로고침 한 번에 "내 기도짝" 링크가 사라지고 빈 폼이 다시 떠서,
@@ -117,7 +134,7 @@ function MyPairLink({ id, showEdit = true }: { id: string; showEdit?: boolean })
 }
 
 export default function ParticipantForm({ participant, editToken = '' }: { participant?: Participant; editToken?: string }) {
-  const [state, formAction] = useActionState(submitParticipant, initialState);
+  const [state, formAction] = useActionState(submitWithRecovery, initialState);
   const editing = !!participant;
 
   // undefined = 아직 브라우저 저장소를 확인하기 전(서버 렌더 시점).

@@ -26,6 +26,7 @@ function harness() {
   });
   vm.runInContext(fs.readFileSync(__dirname + '/Code.gs', 'utf8'), context);
   context.readState = () => clone(stored);
+  context.readSubmissionState = () => clone(stored);
   context.readTable = (_, name) => clone(stored[name]);
   context.commitState = (_, before, after) => {
     writes++;
@@ -33,6 +34,7 @@ function harness() {
     assert.deepEqual(clone(before), stored);
     stored = clone(after);
   };
+  context.commitSubmissionState = context.commitState;
   function call(operation, payload = {}, key = secret) {
     return JSON.parse(context.doPost({ postData: { contents: JSON.stringify({ secret: key, operation, payload }) } }));
   }
@@ -69,6 +71,115 @@ test('submission retries return the original participant and increment revision 
   assert.equal(h.writes(), writes);
   assert.equal(h.call('submit', { requestId: 'invalid', name: '이름', team: '전도팀', prayer: '기도' }).error.code, '22023');
   assert.equal(h.state().match_control[0].revision, 1);
+});
+
+test('three batches of 50 submissions each commit once and keep existing groups and draw untouched', () => {
+  const h = harness(); h.submit(); h.submit(); h.publish(); h.command('draw');
+  const original = h.state(), writes = h.writes();
+  for (let burst = 0; burst < 3; burst++) {
+    const submissions = Array.from({ length: 50 }, (_, i) => ({ requestId: randomUUID(), name: `가상${burst}-${i}`, team: '운영팀', prayer: '가상 기도제목' }));
+    const results = h.ok('submit_batch', { submissions });
+    assert.equal(results.length, 50);
+    assert.deepEqual(results.map(result => result.requestId), submissions.map(submission => submission.requestId));
+    assert.equal(new Set(results.map(result => result.participantId)).size, 50);
+    const stored = h.state();
+    assert.equal(stored.participants.length, original.participants.length + 50 * (burst + 1));
+    assert.equal(stored.match_control[0].revision, original.match_control[0].revision + 50 * (burst + 1));
+    assert.equal(stored.match_control[0].draw_started_at, original.match_control[0].draw_started_at);
+    assert.deepEqual(stored.match_rounds, original.match_rounds);
+    assert.deepEqual(stored.match_groups, original.match_groups);
+    assert.deepEqual(stored.match_members, original.match_members);
+  }
+  assert.equal(h.writes(), writes + 3);
+});
+
+test('batch submission retries and duplicate keys inside a batch return one original participant', () => {
+  const h = harness(), requestId = randomUUID();
+  const first = { requestId, name: '처음 이름', team: '전도팀', prayer: '처음 기도' };
+  const existingId = h.ok('submit', first), newRequest = { ...first, requestId: randomUUID(), name: '새 이름' };
+  const before = h.state(), writes = h.writes();
+  const result = h.ok('submit_batch', { submissions: [first, { ...first, name: '중복 다른 이름' }, newRequest, newRequest] });
+  assert.deepEqual(result.map(row => row.participantId), [existingId, existingId, result[2].participantId, result[2].participantId]);
+  assert.equal(h.state().participants.length, 2);
+  assert.equal(h.state().participant_submissions.length, 2);
+  assert.equal(h.state().match_control[0].revision, before.match_control[0].revision + 1);
+  assert.equal(h.writes(), writes + 1);
+  const after = h.state();
+  assert.deepEqual(h.ok('submit_batch', { submissions: [first, newRequest] }), [result[0], result[2]]);
+  assert.deepEqual(h.state(), after);
+  assert.equal(h.writes(), writes + 1);
+});
+
+test('invalid or oversized batches never partially store earlier valid submissions', () => {
+  const h = harness(), before = h.state(), writes = h.writes();
+  const valid = { requestId: randomUUID(), name: '올바른 이름', team: '운영팀', prayer: '기도' };
+  for (const submissions of [undefined, null, [], [valid, null], [valid, { ...valid, requestId: 'bad' }],
+    [valid, { ...valid, requestId: randomUUID(), prayer: '' }], Array.from({ length: 51 }, () => ({ ...valid, requestId: randomUUID() }))]) {
+    assert.equal(h.call('submit_batch', { submissions }).error.code, '22023');
+    assert.deepEqual(h.state(), before);
+  }
+  assert.equal(h.writes(), writes);
+});
+
+test('fast submission adapter uses one limited Sheets GET and one append batch, preserving control draw', () => {
+  const h = harness(), c = h.context; h.submit(); h.submit(); h.publish(); h.command('draw');
+  const original = h.state(), data = clone(original), calls = [];
+  // Simulate a native Sheets date, which submission must never read or rewrite.
+  data.match_control[0].draw_started_at = 46330.75;
+  const originalDraw = data.match_control[0].draw_started_at;
+  const names = ['participants', 'participant_submissions', 'match_control'];
+  const readColumns = { participants: ['id'], participant_submissions: ['request_id', 'participant_id'], match_control: ['id', 'revision'] };
+  const sheetIds = Object.fromEntries(names.map((name, i) => [name, 100 + i]));
+  const source = fs.readFileSync(__dirname + '/Code.gs', 'utf8');
+  vm.runInContext(source.slice(source.indexOf('function readSubmissionState('), source.indexOf('\nfunction applySubmissions(')), c);
+  vm.runInContext(source.slice(source.indexOf('function commitSubmissionState('), source.indexOf('\nfunction commitState(')), c);
+  c.ScriptApp = { getOAuthToken: () => 'synthetic-token' };
+  c.SpreadsheetApp.openById = () => assert.fail('fast submission must not open SpreadsheetApp or read unrelated event tables');
+  function effective(value) {
+    return value === null ? {} : { effectiveValue: typeof value === 'number' ? { numberValue: value } : typeof value === 'boolean' ? { boolValue: value } : { stringValue: value } };
+  }
+  function decode(cell) {
+    const value = cell.userEnteredValue;
+    return !value ? '' : Object.hasOwn(value, 'numberValue') ? value.numberValue : Object.hasOwn(value, 'boolValue') ? value.boolValue : value.stringValue;
+  }
+  c.UrlFetchApp = { fetch: (url, options) => {
+    calls.push({ url, options });
+    if (options.method === 'get') {
+      assert.ok(!url.includes('match_rounds') && !url.includes('match_groups') && !url.includes('prayer_checkins'));
+      assert.deepEqual(new URL(url).searchParams.getAll('ranges').sort(), ["'participants'!A:A", "'participant_submissions'!A:B", "'match_control'!A:B"].sort());
+      const sheets = names.map(name => {
+        const rows = [readColumns[name], ...data[name].map(record => readColumns[name].map(column => record[column]))];
+        if (name === 'match_control') rows.splice(1, 0, ['', '']); // Preserve a physical gap before the actual control row.
+        return { properties: { sheetId: sheetIds[name], title: name }, data: [{ rowData: rows.map(row => ({ values: row.map(effective) })) }] };
+      });
+      return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ sheets }) };
+    }
+    assert.equal(options.method, 'post');
+    const requests = JSON.parse(options.payload).requests;
+    assert.equal(requests.length, 3);
+    for (const name of ['participants', 'participant_submissions']) {
+      const append = requests.find(request => request.appendCells?.sheetId === sheetIds[name]).appendCells;
+      assert.equal(append.rows.length, 50);
+      assert.equal(append.fields, 'userEnteredValue');
+      for (const row of append.rows) data[name].push(Object.fromEntries(Array.from(c.TABLES[name]).map((column, i) => [column, decode(row.values[i])])));
+    }
+    const update = requests[2].updateCells;
+    assert.deepEqual(update.range, { sheetId: sheetIds.match_control, startRowIndex: 2, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 2 });
+    assert.equal(update.rows[0].values.length, 1, 'only revision is updated; draw_started_at never rewritten');
+    data.match_control[0].revision = decode(update.rows[0].values[0]);
+    return { getResponseCode: () => 200 };
+  } };
+  const submissions = Array.from({ length: 50 }, (_, i) => ({ requestId: randomUUID(), name: `빠른검증${i}`, team: '전도팀', prayer: '=literal text' }));
+  assert.equal(h.ok('submit_batch', { submissions }).length, 50);
+  assert.equal(calls.length, 2);
+  assert.equal(data.participants.length, original.participants.length + 50);
+  assert.equal(data.match_control[0].revision, original.match_control[0].revision + 50);
+  assert.equal(data.match_control[0].draw_started_at, originalDraw);
+  assert.deepEqual(data.match_members, original.match_members);
+  assert.ok(data.participants.slice(-50).every(person => person.prayer_request === '=literal text'));
+  // Whole-event reads still use the original date-aware path; this adapter
+  // validates only existing IDs, request-key foreign keys, and id/revision.
+  c.validateState({ ...data, match_control: original.match_control });
 });
 
 test('publish covers all targets; stale commands and malformed assignments never commit', () => {

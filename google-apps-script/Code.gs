@@ -118,6 +118,20 @@ function doPost(event) {
     if (!spreadsheetId) fail('CONFIG', '저장소를 먼저 설정해 주세요.');
     lock = LockService.getScriptLock();
     if (!lock.tryLock(25000)) fail('503', '다른 신청을 처리하고 있습니다. 잠시 후 다시 시도해 주세요.');
+    if (request.operation === 'submit' || request.operation === 'submit_batch') {
+      // No full event snapshot or SpreadsheetApp round trips on the hot path.
+      // One Sheets GET reads the three needed tables and their sheet IDs.
+      var submissions = request.operation === 'submit' ? [request.payload || {}] : request.payload && request.payload.submissions;
+      validateSubmissionBatch(submissions);
+      var submissionState = readSubmissionState(spreadsheetId);
+      var previousState = JSON.parse(JSON.stringify(submissionState));
+      var submitted = applySubmissions(submissionState, submissions);
+      if (submitted.changed) {
+        validateSubmissionState(submissionState);
+        commitSubmissionState(spreadsheetId, previousState, submissionState);
+      }
+      return jsonOutput({ ok: true, data: request.operation === 'submit' ? submitted.data[0].participantId : submitted.data });
+    }
     var spreadsheet = SpreadsheetApp.openById(spreadsheetId);
     if (request.operation === 'revision') {
       var control = readTable(spreadsheet, 'match_control')[0];
@@ -192,6 +206,105 @@ function readState(spreadsheet) {
 function asCell(value) {
   if (value === null || value === undefined || value === '') return {};
   return { userEnteredValue: typeof value === 'number' ? { numberValue: value } : typeof value === 'boolean' ? { boolValue: value } : { stringValue: String(value) } };
+}
+function validateSubmissionBatch(submissions) {
+  if (!Array.isArray(submissions) || submissions.length < 1 || submissions.length > 50) fail('22023', '한 번에 1~50개의 신청만 저장할 수 있습니다.');
+  submissions.forEach(function (submission) {
+    if (!submission || typeof submission !== 'object' || Array.isArray(submission)) fail('22023', '신청 내용을 확인해 주세요.');
+    assertUuid(submission.requestId);
+  });
+}
+function validateSubmissionState(state) {
+  if (!state || !Array.isArray(state.participants) || !Array.isArray(state.participant_submissions) || !Array.isArray(state.match_control) || state.match_control.length !== 1) fail('CONFIG', '신청 저장소 구성을 확인해 주세요.');
+  var control = state.match_control[0];
+  if (!control || control.id !== true || !isInteger(control.revision, 0)) fail('CONFIG', '행사 상태 값이 올바르지 않습니다.');
+  var people = uniqueIndex(state.participants, 'id');
+  var keys = {};
+  state.participant_submissions.forEach(function (submission) {
+    assertUuid(submission.request_id);
+    if (keys[submission.request_id] || !people[submission.participant_id]) fail('22023', '신청 재시도 연결을 확인해 주세요.');
+    keys[submission.request_id] = true;
+  });
+}
+function readSubmissionState(spreadsheetId) {
+  var names = ['participants', 'participant_submissions', 'match_control'];
+  var columns = { participants: ['id'], participant_submissions: ['request_id', 'participant_id'], match_control: ['id', 'revision'] };
+  var query = names.map(function (name) { return 'ranges=' + encodeURIComponent("'" + name + "'!A:" + String.fromCharCode(64 + columns[name].length)); }).join('&');
+  var fields = 'sheets(properties(sheetId,title),data(rowData(values(effectiveValue))))';
+  var response = UrlFetchApp.fetch('https://sheets.googleapis.com/v4/spreadsheets/' + encodeURIComponent(spreadsheetId) + '?' + query + '&includeGridData=true&fields=' + encodeURIComponent(fields), {
+    method: 'get', headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true
+  });
+  if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) fail('503', '구글시트 신청 정보를 읽지 못했습니다. 잠시 후 다시 시도해 주세요.');
+  var parsed;
+  try { parsed = JSON.parse(response.getContentText()); } catch (_) { fail('503', '구글시트 응답을 확인하지 못했습니다.'); }
+  var state = { _sheetIds: {}, _controlRowIndex: null };
+  names.forEach(function (name) {
+    var sheet = (parsed.sheets || []).filter(function (candidate) { return candidate.properties && candidate.properties.title === name; })[0];
+    if (!sheet) fail('CONFIG', '신청 저장소 setup 함수를 먼저 실행해 주세요.');
+    state._sheetIds[name] = sheet.properties.sheetId;
+    var rawRows = (sheet.data && sheet.data[0] && sheet.data[0].rowData) || [];
+    var headers = columns[name];
+    var values = rawRows.map(function (row) {
+      return headers.map(function (_, index) {
+        var cell = row.values && row.values[index], value = cell && cell.effectiveValue;
+        if (!value) return '';
+        if (value.errorValue) fail('CONFIG', '신청 저장소에 계산 오류가 있습니다.');
+        if (Object.prototype.hasOwnProperty.call(value, 'stringValue')) return value.stringValue;
+        if (Object.prototype.hasOwnProperty.call(value, 'numberValue')) return value.numberValue;
+        if (Object.prototype.hasOwnProperty.call(value, 'boolValue')) return value.boolValue;
+        return '';
+      });
+    });
+    if (!values.length || JSON.stringify(values[0]) !== JSON.stringify(headers)) fail('CONFIG', name + ' 시트의 열 제목을 확인해 주세요.');
+    state[name] = [];
+    values.slice(1).forEach(function (row, index) {
+      if (!row.some(function (value) { return value !== ''; })) return;
+      var record = {};
+      headers.forEach(function (column, columnIndex) { record[column] = column === 'draw_started_at' && row[columnIndex] === '' ? null : row[columnIndex]; });
+      if (name === 'match_control') state._controlRowIndex = index + 1;
+      state[name].push(record);
+    });
+  });
+  validateSubmissionState(state);
+  return state;
+}
+function applySubmissions(state, submissions) {
+  validateSubmissionBatch(submissions);
+  var previous = {}, created = 0;
+  state.participant_submissions.forEach(function (submission) { previous[submission.request_id] = submission.participant_id; });
+  var result = submissions.map(function (submission) {
+    var participantId = previous[submission.requestId];
+    if (!participantId) {
+      var person = { id: Utilities.getUuid(), name: submission.name, team: submission.team, prayer_request: submission.prayer, created_at: nowIso(), edit_version: 0 };
+      validatePerson(person);
+      state.participants.push(person);
+      state.participant_submissions.push({ request_id: submission.requestId, participant_id: person.id });
+      participantId = person.id; previous[submission.requestId] = participantId; created++;
+    }
+    return { requestId: submission.requestId, participantId: participantId };
+  });
+  if (created) state.match_control[0].revision += created;
+  return { data: result, changed: created > 0 };
+}
+function commitSubmissionState(spreadsheetId, before, after) {
+  var requests = [];
+  ['participants', 'participant_submissions'].forEach(function (name) {
+    var additions = after[name].slice(before[name].length);
+    if (!additions.length) return;
+    requests.push({ appendCells: { sheetId: before._sheetIds[name], rows: additions.map(function (record) {
+      return { values: TABLES[name].map(function (column) { return asCell(record[column]); }) };
+    }), fields: 'userEnteredValue' } });
+  });
+  if (!requests.length) return;
+  requests.push({ updateCells: {
+    range: { sheetId: before._sheetIds.match_control, startRowIndex: before._controlRowIndex, endRowIndex: before._controlRowIndex + 1, startColumnIndex: 1, endColumnIndex: 2 },
+    rows: [{ values: [asCell(after.match_control[0].revision)] }], fields: 'userEnteredValue'
+  } });
+  var response = UrlFetchApp.fetch('https://sheets.googleapis.com/v4/spreadsheets/' + encodeURIComponent(spreadsheetId) + ':batchUpdate', {
+    method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    payload: JSON.stringify({ requests: requests, includeSpreadsheetInResponse: false }), muteHttpExceptions: true
+  });
+  if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) fail('503', '구글시트에 신청을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.');
 }
 function commitState(spreadsheet, before, after) {
   var requests = [];
@@ -350,16 +463,9 @@ function applyOperation(state, operation, payload) {
     Object.keys(TABLES).forEach(function (name) { state[name] = normalized[name]; });
     return { data: tableCounts(state), changed: true };
   }
-  if (operation === 'submit') {
-    assertUuid(payload.requestId);
-    var previous = state.participant_submissions.filter(function (s) { return s.request_id === payload.requestId; })[0];
-    if (previous) return { data: previous.participant_id, changed: false };
-    person = { id: Utilities.getUuid(), name: payload.name, team: payload.team, prayer_request: payload.prayer, created_at: nowIso(), edit_version: 0 };
-    validatePerson(person);
-    state.participants.push(person);
-    state.participant_submissions.push({ request_id: payload.requestId, participant_id: person.id });
-    control.revision++;
-    return { data: person.id, changed: true };
+  if (operation === 'submit' || operation === 'submit_batch') {
+    var submitted = applySubmissions(state, operation === 'submit' ? [payload] : payload.submissions);
+    return { data: operation === 'submit' ? submitted.data[0].participantId : submitted.data, changed: submitted.changed };
   }
   if (operation === 'edit') {
     assertUuid(payload.id);
