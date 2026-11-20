@@ -13,17 +13,21 @@ const initialState: SubmitState = { status: 'idle', message: '' };
 // lets the next call recover that participant and its ownership cookies.
 export async function submitWithRecovery(previous: SubmitState, form: FormData): Promise<SubmitState> {
   const registering = !form.get('participant_id');
-  try {
-    return await submitParticipant(previous, form);
-  } catch {
-    if (registering) {
-      await new Promise(resolve => setTimeout(resolve, 750 + Math.random() * 1500));
-      try { return await submitParticipant(previous, form); } catch { /* Show the recoverable form. */ }
+  const attempts = registering ? 3 : 1;
+  let result: SubmitState = { status: 'error', message: registering
+    ? '접수 결과를 확인하지 못했어요. 연결을 확인한 뒤 이 화면에서 다시 보내 주세요.'
+    : '수정 결과를 확인하지 못했어요. 신청 정보를 다시 열어 확인해 주세요.' };
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) {
+      const delay = (1000 + Math.random() * 2500) * 2 ** (attempt - 1);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
-    return { status: 'error', message: registering
-      ? '접수 결과를 확인하지 못했어요. 연결을 확인한 뒤 이 화면에서 다시 보내 주세요.'
-      : '수정 결과를 확인하지 못했어요. 신청 정보를 다시 열어 확인해 주세요.' };
+    try {
+      result = await submitParticipant(previous, form);
+      if (!result.retryable) return result;
+    } catch { /* The response may have been lost after the write. */ }
   }
+  return result;
 }
 
 /**
@@ -96,14 +100,25 @@ function forget() {
 
 function SubmitButton({ shareInGroup, editing }: { shareInGroup: boolean; editing?: boolean }) {
   const { pending } = useFormStatus();
+  const [waiting, setWaiting] = useState(false);
+  useEffect(() => {
+    if (!pending || editing) { setWaiting(false); return; }
+    const timer = setTimeout(() => setWaiting(true), 8000);
+    return () => clearTimeout(timer);
+  }, [pending, editing]);
   return (
-    <button
-      type="submit"
-      disabled={pending}
-      className="w-full rounded-xl bg-brand-600 px-4 py-4 text-lg font-semibold text-white transition active:scale-[0.99] disabled:opacity-50"
-    >
-      {pending ? '저장 중…' : editing ? '수정 내용 저장하기' : shareInGroup ? '참가 신청하기' : '기도제목 보내기'}
-    </button>
+    <>
+      <button
+        type="submit"
+        disabled={pending}
+        className="w-full rounded-xl bg-brand-600 px-4 py-4 text-lg font-semibold text-white transition active:scale-[0.99] disabled:opacity-50"
+      >
+        {pending ? '저장 중…' : editing ? '수정 내용 저장하기' : shareInGroup ? '참가 신청하기' : '기도제목 보내기'}
+      </button>
+      {pending && waiting && (
+        <p role="status" className="mt-2 text-sm text-slate-600">접수를 확인하고 있어요. 완료 안내가 나올 때까지 이 화면을 열어 주세요.</p>
+      )}
+    </>
   );
 }
 

@@ -1,6 +1,6 @@
 'use server';
 
-import { sheetRequest, SheetsError } from '@/lib/sheets/server';
+import { sheetRequest, SheetsError, sheetFailureFacts } from '@/lib/sheets/server';
 import { submitToSheets } from '@/lib/sheets/submissions';
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { EVENT_CACHE_TAG } from '@/lib/event';
@@ -12,11 +12,21 @@ export type SubmitState = {
   status: 'idle' | 'success' | 'error';
   message: string;
   participantId?: string;
+  retryable?: true;
 };
 
 const MAX_NAME = 20;
 const MAX_PRAYER = 500;
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const finalFailureCounts: Record<string, number> = {};
+
+function recordRegistrationFailure(error: unknown) {
+  if (process.env.SHEETS_DIAGNOSTICS !== 'true') return;
+  const facts = sheetFailureFacts(error);
+  const key = `${facts.code}:${facts.reason}:${facts.httpStatus ?? 'none'}`;
+  finalFailureCounts[key] = (finalFailureCounts[key] ?? 0) + 1;
+  console.warn(JSON.stringify({ event: 'registration_final_failure_totals', scope: 'instance', counts: finalFailureCounts }));
+}
 
 export async function submitParticipant(
   _prevState: SubmitState,
@@ -82,9 +92,10 @@ export async function submitParticipant(
       participantId,
     };
   } catch (err) {
+    if (!id) recordRegistrationFailure(err);
     if (err instanceof SheetsError && err.code === '40001') return { status: 'error', message: '다른 화면에서 이미 수정되었습니다. 새로고침 후 최신 내용을 확인해 주세요.' };
     if (!id && err instanceof SheetsError && ['503', '429', 'CONNECTION'].includes(err.code)) {
-      return { status: 'error', message: '시트에서 접수 결과를 확인하지 못했어요. 잠시 후 이 화면에서 다시 보내 주세요.' };
+      return { status: 'error', retryable: true, message: '시트에서 접수 결과를 확인하지 못했어요. 잠시 후 이 화면에서 다시 보내 주세요.' };
     }
     return {
       status: 'error',

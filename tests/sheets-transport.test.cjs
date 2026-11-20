@@ -31,6 +31,7 @@ test('Sheets transport sends private credentials and data only in its server POS
   assert.equal(options.method, 'POST');
   assert.equal(options.cache, 'no-store');
   assert.equal(options.headers['Content-Type'], 'application/json');
+  assert.equal(options.headers['Accept-Language'], 'en-US');
   assert.deepEqual(JSON.parse(options.body), { secret: privateKey, operation: 'submit', payload: { name: '비공개 이름', prayer: '비공개 기도' } });
   assert.equal(url.includes(privateKey), false);
 });
@@ -80,7 +81,7 @@ test('HTML sign-in pages produce a deployment error instead of a successful stor
 });
 
 test('a batch may shorten the transport deadline, including while reading the response body', async () => {
-  const h = transport({ fetch: async () => ({ ok: true, json: () => new Promise((_, reject) => {
+  const h = transport({ fetch: async () => ({ ok: true, text: () => new Promise((_, reject) => {
     setTimeout(() => reject(new Error('body stream aborted')), 10);
   }) }) });
   await assert.rejects(h.sheetRequest('snapshot', {}, { timeoutMs: 1 }), error => error instanceof h.SheetsError && error.code === 'CONNECTION');
@@ -90,6 +91,79 @@ test('a batch may shorten the transport deadline, including while reading the re
     await assert.rejects(invalid.sheetRequest('snapshot', {}, { timeoutMs }), error => error.code === 'CONFIG');
     assert.equal(invalid.calls.length, 0);
   }
+});
+
+test('only recognized temporary Google HTML errors are retryable, with safe reason facts', async () => {
+  const cases = [
+    ["There are too many scripts running simultaneously for this Google user account.", 'GOOGLE_CONCURRENCY'],
+    ['Script invoked too many times per second for this Google user account.', 'GOOGLE_RATE_LIMIT'],
+    ['Service invoked too many times in a short time: Spreadsheets.', 'GOOGLE_RATE_LIMIT'],
+    ["We&#39;re sorry, a server error occurred. Please wait a bit and try again.", 'GOOGLE_SERVER'],
+    ['이 Google 사용자 계정에 대해 동시에 실행 중인 스크립트가 너무 많습니다.', 'GOOGLE_CONCURRENCY'],
+    ['요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.', 'GOOGLE_RATE_LIMIT'],
+    ['죄송합니다. 서버 오류가 발생했습니다.', 'GOOGLE_SERVER'],
+  ];
+  for (const [text, reason] of cases) {
+    const h = transport({ fetch: async () => new Response(`<html><body>${text}</body></html>`, { status: 200 }) });
+    await assert.rejects(h.sheetRequest('submit_batch'), error => {
+      assert.equal(error.code, 'CONNECTION');
+      assert.deepEqual({ ...h.sheetFailureFacts(error) }, { code: 'CONNECTION', reason, httpStatus: 200 });
+      assert.equal(error.message.includes(text), false);
+      return true;
+    });
+  }
+});
+
+test('sign-in, IAM, permissions, daily quotas and unrelated non-JSON pages are never classified as burst errors', async () => {
+  const pages = [
+    '<html>Sign in to Google. Too many requests.</html>',
+    "<html>PERMISSION_DENIED iam.serviceAccounts. We're sorry, a server error occurred.</html>",
+    '<html>Authorization is required. There are too many scripts running simultaneously for this Google user account.</html>',
+    '<html>권한이 없습니다. 요청이 너무 많습니다.</html>',
+    '<html>로그인하세요. 죄송합니다. 서버 오류가 발생했습니다.</html>',
+    '<html>Service invoked too many times for one day: urlfetch.</html>',
+    '<html>일일 할당량 한도 초과. 요청이 너무 많습니다.</html>',
+    '<html>Sorry, unable to open the file at this time.</html>',
+    'There are too many scripts running simultaneously for this Google user account.',
+    '<html><script>const message = "Too many requests";</script>Unknown page</html>',
+  ];
+  for (const page of pages) {
+    const h = transport({ fetch: async () => new Response(page) });
+    await assert.rejects(h.sheetRequest('submit_batch'), error => error.code === 'CONFIG');
+  }
+  for (const url of ['https://accounts.google.com/login', 'https://example.com/error']) {
+    const response = new Response('<html>Too many requests</html>');
+    Object.defineProperty(response, 'url', { value: url });
+    const h = transport({ fetch: async () => response });
+    await assert.rejects(h.sheetRequest('submit_batch'), error => error.code === 'CONFIG');
+  }
+});
+
+test('HTTP throttling and server failures are distinct from permanent HTTP access failures', async () => {
+  for (const status of [429, 500, 502, 503, 504]) {
+    const h = transport({ fetch: async () => new Response('private upstream detail', { status }) });
+    await assert.rejects(h.sheetRequest('submit_batch'), error => {
+      assert.equal(error.code, status === 429 ? '429' : 'CONNECTION');
+      const facts = h.sheetFailureFacts(error);
+      assert.equal(facts.reason, status === 429 ? 'HTTP_RATE_LIMIT' : 'HTTP_5XX');
+      assert.equal(facts.httpStatus, status);
+      return true;
+    });
+  }
+  for (const status of [400, 401, 403, 404]) {
+    const h = transport({ fetch: async () => new Response('permission failure', { status }) });
+    await assert.rejects(h.sheetRequest('submit_batch'), error => error.code === String(status) && h.sheetFailureFacts(error).reason === 'HTTP_CLIENT');
+  }
+});
+
+test('diagnostic facts distinguish backend lock failure and cannot echo arbitrary error content', async () => {
+  const h = transport({ fetch: async () => new Response(JSON.stringify({ ok: false, error: { code: '503', message: '다른 신청을 처리하고 있습니다. 잠시 후 다시 시도해 주세요.' } })) });
+  await assert.rejects(h.sheetRequest('submit_batch'), error => {
+    assert.deepEqual({ ...h.sheetFailureFacts(error) }, { code: '503', reason: 'BACKEND_LOCK', httpStatus: 200 });
+    return true;
+  });
+  assert.deepEqual({ ...h.sheetFailureFacts(new h.SheetsError('private-person-id', 'private prayer', { reason: 'private-secret', httpStatus: NaN })) }, { code: 'OTHER', reason: 'UNCLASSIFIED' });
+  assert.deepEqual({ ...h.sheetFailureFacts(new Error('private-token')) }, { code: 'OTHER', reason: 'UNEXPECTED' });
 });
 
 test('backend errors retain their machine code without exposing private backend messages', async () => {

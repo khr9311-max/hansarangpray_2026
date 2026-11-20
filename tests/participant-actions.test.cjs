@@ -5,20 +5,20 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const requestId = '38a8a4fe-0b74-4589-9cf0-3ec119c3981d';
 
-function harness({ allowed = true, storageError = null } = {}) {
-  const calls = [], granted = [], prayerAccessGranted = [], invalidated = [], invalidatedTags = [];
+function harness({ allowed = true, storageError = null, diagnostics = false } = {}) {
+  const calls = [], granted = [], prayerAccessGranted = [], invalidated = [], invalidatedTags = [], logs = [];
   let serverCallCount = 0;
   class SheetsError extends Error {
-    constructor(code, message = 'Storage request failed') { super(message); this.code = code; }
+    constructor(code, message = 'Storage request failed', failure) { super(message); this.code = code; this.failure = failure; }
   }
   async function storageCall(operation, payload) {
     serverCallCount++;
     calls.push({ operation, payload });
-    if (storageError) throw new SheetsError(storageError.code, storageError.message);
+    if (storageError) throw new SheetsError(storageError.code, storageError.message, storageError.failure);
     return operation === 'edit' ? payload.version + 1 : 'new-participant-id';
   }
   const imports = {
-    '@/lib/sheets/server': { SheetsError, async sheetRequest(operation, payload) {
+    '@/lib/sheets/server': { SheetsError, sheetFailureFacts: error => ({ code: error.code, reason: error.failure?.reason ?? 'UNCLASSIFIED' }), async sheetRequest(operation, payload) {
       assert.equal(operation, 'edit', 'new registrations must use the batching adapter');
       return storageCall(operation, payload);
     } },
@@ -37,11 +37,11 @@ function harness({ allowed = true, storageError = null } = {}) {
   const code = ts.transpileModule(readFileSync('src/app/actions.ts', 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
-  vm.runInNewContext(code, { exports, console: { error() {} }, require(name) {
+  vm.runInNewContext(code, { exports, process: { env: { SHEETS_DIAGNOSTICS: diagnostics ? 'true' : undefined } }, console: { error() {}, warn: value => logs.push(JSON.parse(value)) }, require(name) {
     assert.ok(name in imports, `Unexpected import ${name}`);
     return imports[name];
   } });
-  return { run: data => exports.submitParticipant({ status: 'idle', message: '' }, data), calls, granted, prayerAccessGranted, invalidated, invalidatedTags, get serverCallCount() { return serverCallCount; } };
+  return { run: data => exports.submitParticipant({ status: 'idle', message: '' }, data), calls, granted, prayerAccessGranted, invalidated, invalidatedTags, logs, get serverCallCount() { return serverCallCount; } };
 }
 
 function form(overrides = {}) {
@@ -88,6 +88,7 @@ test('temporary registration failures preserve the request and tell the particip
     const data = form();
     const result = await h.run(data);
     assert.equal(result.status, 'error');
+    assert.equal(result.retryable, true);
     assert.match(result.message, /접수 결과를 확인하지 못했어요/);
     assert.match(result.message, /이 화면에서 다시 보내/);
     assert.equal(data.get('submission_id'), requestId);
@@ -95,6 +96,25 @@ test('temporary registration failures preserve the request and tell the particip
     assert.deepEqual(h.prayerAccessGranted, []);
     assert.deepEqual(h.invalidatedTags, []);
   }
+});
+
+test('business, configuration, validation and edit failures never request registration retries', async () => {
+  for (const code of ['40001', 'CONFIG', '22023', '401', '403', 'STORAGE']) {
+    const h = harness({ storageError: { code } });
+    assert.equal((await h.run(form())).retryable, undefined);
+  }
+  const invalid = harness();
+  assert.equal((await invalid.run(form({ team: '없는 팀' }))).retryable, undefined);
+  const edit = harness({ storageError: { code: 'CONNECTION' } });
+  assert.equal((await edit.run(form({ participant_id: 'existing-id', edit_version: '0' }))).retryable, undefined);
+});
+
+test('optional final-failure diagnostics contain only aggregate classes and counts', async () => {
+  const h = harness({ diagnostics: true, storageError: { code: 'CONNECTION', message: 'private upstream prayer', failure: { reason: 'GOOGLE_CONCURRENCY' } } });
+  await h.run(form()); await h.run(form());
+  assert.deepEqual(h.logs[1], { event: 'registration_final_failure_totals', scope: 'instance', counts: { 'CONNECTION:GOOGLE_CONCURRENCY:none': 2 } });
+  const output = JSON.stringify(h.logs);
+  for (const secret of [requestId, '참가자', '함께 기도합니다.', 'private upstream prayer']) assert.equal(output.includes(secret), false);
 });
 
 test('editing rejects unauthorized access before sending a storage request', async () => {

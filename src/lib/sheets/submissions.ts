@@ -1,5 +1,5 @@
 import 'server-only';
-import { sheetRequest, SheetsError } from './server';
+import { sheetRequest, SheetsError, sheetFailureFacts } from './server';
 
 export type SheetSubmission = { requestId: string; name: string; team: string; prayer: string };
 type BatchResult = { requestId: string; participantId: string };
@@ -88,6 +88,10 @@ async function runBatch(batch: Batch) {
       batches.push({ items: waiting, attempts: batch.attempts, readyAt: Date.now() + delayMs });
       for (const item of items) if (!waiting.includes(item)) finish(item, timeoutError());
     } else {
+      if (typeof process !== 'undefined' && process.env.SHEETS_DIAGNOSTICS === 'true') {
+        console.warn(JSON.stringify({ event: 'sheets_submission_batch_failed', batchSize: items.length, attempts: batch.attempts,
+          elapsedMs: Math.max(0, Date.now() - Math.min(...items.map(item => item.deadline)) + TOTAL_DEADLINE_MS), ...sheetFailureFacts(error) }));
+      }
       for (const item of items) finish(item, error);
     }
   }
