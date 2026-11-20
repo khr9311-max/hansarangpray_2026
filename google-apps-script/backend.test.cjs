@@ -12,6 +12,7 @@ function empty() {
 }
 function harness() {
   let stored = empty(), writes = 0, locks = 0, failWrite = false;
+  const properties = new Map([['SHEETS_API_SECRET', secret], ['SPREADSHEET_ID', 'sheet-id']]);
   let clock = Date.now();
   class TestDate extends Date {
     constructor(...args) { super(...(args.length ? args : [clock])); }
@@ -19,7 +20,7 @@ function harness() {
   }
   const context = vm.createContext({
     console, Date: TestDate, Utilities: { getUuid: randomUUID },
-    PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'SHEETS_API_SECRET' ? secret : 'sheet-id' }) },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: key => properties.get(key), setProperty: (key, value) => properties.set(key, value) }) },
     LockService: { getScriptLock: () => ({ tryLock: () => { locks++; return true; }, hasLock: () => true, releaseLock() {} }) },
     SpreadsheetApp: { openById: () => ({}) },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: text => ({ setMimeType: () => text }) }
@@ -60,6 +61,23 @@ test('authentication rejects requests before accessing storage; GET reveals no r
   assert.equal(h.call('export', {}, 'wrong').error.code, '401');
   assert.equal(h.locks(), before);
   assert.deepEqual(JSON.parse(h.context.doGet()), { ok: true, service: 'jjak-gido-google-sheets', version: 1 });
+});
+
+test('the migration gate blocks writes under the submit lock and keeps export available', () => {
+  const h = harness();
+  h.submit();
+  const before = h.state(), locks = h.locks();
+  assert.equal(h.call('migration_set_read_only', { readOnly: true }, 'wrong').error.code, '401');
+  assert.equal(h.locks(), locks);
+  assert.deepEqual(h.ok('migration_status'), { readOnly: false });
+  assert.equal(h.call('migration_set_read_only', { readOnly: 'true' }).error.code, '22023');
+  assert.deepEqual(h.ok('migration_set_read_only', { readOnly: true }), { readOnly: true });
+  assert.equal(h.call('submit_batch', {}).error.code, '55000');
+  assert.equal(h.call('command', {}).error.code, '55000');
+  assert.deepEqual(h.ok('export'), before);
+  assert.deepEqual(h.ok('migration_set_read_only', { readOnly: false }), { readOnly: false });
+  h.submit();
+  assert.equal(h.state().participants.length, before.participants.length + 1);
 });
 
 test('submission retries return the original participant and increment revision once', () => {

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --test tests/*.test.cjs google-apps-script/backend.test.cjs scripts/migrate-to-sheets.test.mjs",
+    "test": "node --test tests/*.test.cjs google-apps-script/backend.test.cjs scripts/migrate-to-sheets.test.mjs scripts/migrate-from-sheets.test.mjs",
     "migrate:sheets": "node scripts/migrate-to-sheets.mjs"
   },
   "dependencies": {

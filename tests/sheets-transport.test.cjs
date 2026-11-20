@@ -11,13 +11,21 @@ const productionUrl = 'https://script.google.com/macros/s/test-deployment-id/exe
 function transport({ env = {}, fetch: request = async () => new Response(JSON.stringify({ ok: true, data: null })) } = {}) {
   const calls = [], exports = {};
   const environment = { GOOGLE_SHEETS_WEB_APP_URL: productionUrl, GOOGLE_SHEETS_API_SECRET: privateKey, ...env };
+  const errors = {};
+  vm.runInNewContext(ts.transpileModule(readFileSync('src/lib/storage-errors.ts', 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText, { exports: errors });
   const code = ts.transpileModule(readFileSync('src/lib/sheets/server.ts', 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   vm.runInNewContext(code, {
     exports, process: { env: environment }, URL, AbortSignal,
     fetch: async (...args) => { calls.push(args); return request(...args); },
-    require: name => { assert.equal(name, 'server-only'); return {}; },
+    require(name) {
+      if (name === 'server-only') return {};
+      assert.equal(name, '../storage-errors');
+      return errors;
+    },
   });
   return { ...exports, calls, env: environment };
 }

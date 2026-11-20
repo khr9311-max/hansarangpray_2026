@@ -1,7 +1,6 @@
 'use server';
 
-import { sheetRequest, SheetsError, sheetFailureFacts } from '@/lib/sheets/server';
-import { submitToSheets } from '@/lib/sheets/submissions';
+import { retryableStorageError, StorageError, storageFailureFacts, storageRequest, submitRegistration } from '@/lib/storage';
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { EVENT_CACHE_TAG } from '@/lib/event';
 import { allowParticipantEdit, rememberParticipantAccess, validEditToken } from '@/lib/participant-access';
@@ -21,8 +20,8 @@ const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const finalFailureCounts: Record<string, number> = {};
 
 function recordRegistrationFailure(error: unknown) {
-  if (process.env.SHEETS_DIAGNOSTICS !== 'true') return;
-  const facts = sheetFailureFacts(error);
+  if (process.env.SHEETS_DIAGNOSTICS !== 'true' && process.env.PRAYER_STORAGE_DIAGNOSTICS !== 'true') return;
+  const facts = storageFailureFacts(error);
   const key = `${facts.code}:${facts.reason}:${facts.httpStatus ?? 'none'}`;
   finalFailureCounts[key] = (finalFailureCounts[key] ?? 0) + 1;
   console.warn(JSON.stringify({ event: 'registration_final_failure_totals', scope: 'instance', counts: finalFailureCounts }));
@@ -67,8 +66,8 @@ export async function submitParticipant(
 
   try {
     const data = id
-      ? await sheetRequest<number>('edit', { id, version: Number(formData.get('edit_version')), name, team, prayer: prayerRequest })
-      : await submitToSheets({ requestId: submissionId, name, team, prayer: prayerRequest });
+      ? await storageRequest<number>('edit', { id, version: Number(formData.get('edit_version')), name, team, prayer: prayerRequest })
+      : await submitRegistration({ requestId: submissionId, name, team, prayer: prayerRequest });
 
     if (data === null || data === undefined || data === '') {
       return {
@@ -93,9 +92,9 @@ export async function submitParticipant(
     };
   } catch (err) {
     if (!id) recordRegistrationFailure(err);
-    if (err instanceof SheetsError && err.code === '40001') return { status: 'error', message: '다른 화면에서 이미 수정되었습니다. 새로고침 후 최신 내용을 확인해 주세요.' };
-    if (!id && err instanceof SheetsError && ['503', '429', 'CONNECTION'].includes(err.code)) {
-      return { status: 'error', retryable: true, message: '시트에서 접수 결과를 확인하지 못했어요. 잠시 후 이 화면에서 다시 보내 주세요.' };
+    if (err instanceof StorageError && err.code === '40001') return { status: 'error', message: '다른 화면에서 이미 수정되었습니다. 새로고침 후 최신 내용을 확인해 주세요.' };
+    if (!id && retryableStorageError(err)) {
+      return { status: 'error', retryable: true, message: '접수 결과를 확인하지 못했어요. 잠시 후 이 화면에서 다시 보내 주세요.' };
     }
     return {
       status: 'error',

@@ -32,25 +32,33 @@ const people = () => Object.freeze(Array.from({ length: 7 }, (_, i) => Object.fr
   prayer_request: `Prayer ${i}`, created_at: '', edit_version: 0,
 })));
 
-function eventHarness({ data = 3, error = null } = {}) {
+function eventHarness({ data = 3, error = null, supabase = false } = {}) {
   const calls = [], invalidatedTags = [];
-  class SheetsError extends Error {
+  class StorageError extends Error {
     constructor(code, message = 'Storage request failed') { super(message); this.code = code; }
   }
   const event = load('src/lib/event.ts', {
     'server-only': {}, react: { cache: fn => fn },
     'next/cache': { unstable_cache: fn => fn, revalidateTag: tag => invalidatedTags.push(tag) },
-    './sheets/server': {
-      SheetsError,
-      sheetRequest: async (operation, payload) => {
+    './storage': {
+      StorageError, usesSupabase: () => supabase,
+      storageRequest: async (operation, payload) => {
         calls.push({ operation, payload: payload === undefined ? undefined : clone(payload) });
-        if (error) throw new SheetsError(error.code, error.message);
+        if (error) throw new StorageError(error.code, error.message);
         return data;
       },
     },
   });
   return { event, calls, invalidatedTags };
 }
+
+test('a Supabase change check requests only the revision, while Sheets shares the snapshot', async () => {
+  for (const supabase of [true, false]) {
+    const h = eventHarness({ supabase, data: { revision: 12 } });
+    assert.equal(await h.event.getEventRevision(), 12);
+    assert.deepEqual(h.calls.map(call => call.operation), [supabase ? 'revision' : 'snapshot']);
+  }
+});
 
 function harness({ admin = true, count = 3, conflict = false, active = true, participants = people(), revision = 17 } = {}) {
   const writes = [], appends = [], reads = [], invalidations = [];
@@ -217,5 +225,5 @@ test('append storage request maps conflicts and missing-round errors without ret
   const noOp = eventHarness({ data: 0 });
   assert.equal(await noOp.event.appendParticipants(17), 0);
   assert.equal(noOp.calls.length, 1);
-  assert.deepEqual(noOp.invalidatedTags, ['prayer-sheets-event']);
+  assert.deepEqual(noOp.invalidatedTags, ['prayer-event']);
 });

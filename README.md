@@ -4,12 +4,12 @@ QR로 신청을 받아 짝을 지어주고, 빔프로젝터 화면에서 추첨�
 
 - **운영 사이트**: https://hansarangpray-2026.vercel.app
 - **프레임워크**: Next.js 15 (App Router · Server Actions)
-- **저장소**: Google Sheets + Google Apps Script
+- **운영 저장소**: Supabase PostgreSQL
 - **스타일 / 호스팅**: Tailwind CSS v4 / Vercel
-- **데이터 시트**: [짝기도 데이터](https://docs.google.com/spreadsheets/d/1AagqNZCvtBWlNtiUHiH6HFU1Rxy3NYYyK5ge-p3schs/edit)
-- **저장소 스크립트**: [짝기도 Apps Script](https://script.google.com/home/projects/1mkO6GSsf2OM-YdjUnCe1L46p2ekcPL8ceKIeiFpG-k_hh0Y80hJvkimG/edit)
+- **전환 전 데이터**: [짝기도 데이터 시트](https://docs.google.com/spreadsheets/d/1AagqNZCvtBWlNtiUHiH6HFU1Rxy3NYYyK5ge-p3schs/edit)
+- **시트 보관용 스크립트**: [짝기도 Apps Script](https://script.google.com/home/projects/1mkO6GSsf2OM-YdjUnCe1L46p2ekcPL8ceKIeiFpG-k_hh0Y80hJvkimG/edit)
 
-앱 서버가 비밀키로 Apps Script에 요청하고, Apps Script가 비공개 시트를 읽고 씁니다. 브라우저에는 저장소 비밀키를 전달하지 않습니다. Supabase는 앱 실행에 사용하지 않으며, `supabase/`는 기존 데이터 이전과 과거 스키마 확인을 위해 보관합니다.
+앱 서버가 서버 전용 키로 Supabase 저장 함수를 호출합니다. 공개 화면의 변경 확인에는 행사 버전 번호만 전달합니다. 운영 전환 전 시트는 당시 명단을 보관하며, 최신 명단은 관리자 화면에서 CSV로 받을 수 있습니다.
 
 ## 화면
 
@@ -21,7 +21,7 @@ QR로 신청을 받아 짝을 지어주고, 빔프로젝터 화면에서 추첨�
 | `/me/[참가자id]` | 본인 조의 기도제목·주차별 기도 현황을 보고 본인의 1~4주차를 체크하는 개인 링크 |
 | `/edit/[참가자id]` | 본인 수정 권한 또는 관리자 권한으로 신청 정보 수정 |
 
-다른 기기의 변경은 화면이 약 5초마다 확인해 자동 반영합니다. 여러 휴대폰의 읽기 요청은 서버에서 2초간 공유해 구글시트 호출을 줄입니다. 화면으로 복귀했을 때도 갱신합니다. 네트워크와 Google 응답에 따라 반영이 더 늦어질 수 있습니다.
+다른 기기의 변경은 화면이 약 5초마다 행사 버전 번호를 확인해 자동 반영합니다. 서버는 2초간 조회를 공유합니다. 화면으로 복귀했을 때도 갱신합니다.
 
 ### 기도제목과 개인 링크
 
@@ -83,9 +83,9 @@ QR로 신청을 받아 짝을 지어주고, 빔프로젝터 화면에서 추첨�
 | 11명 | 3, 2, 2, 2, 2 | 4, 4, 3 | 4, 4, 3 | 6, 5 | 6, 5 |
 | 13명 | 3, 2, 2, 2, 2, 2 | 4, 3, 3, 3 | 5, 4, 4 | 5, 5, 3 | 7, 6 |
 
-## 구글시트 저장소 설정
+## 구글시트 저장소 보관 및 복구
 
-현재 저장소는 위 데이터 시트와 독립형 Apps Script 프로젝트를 연결한 구성입니다. 소유자 Google 계정의 권한 승인은 완료했습니다. 기존 저장소를 관리할 때는 위 **저장소 스크립트**에서 코드와 배포를 수정합니다. 아래 최초 설정은 별도 새 저장소를 만들 때 사용합니다.
+전환 전에는 위 데이터 시트와 독립형 Apps Script 프로젝트를 연결했습니다. 시트 저장소를 별도 검증 환경에서 사용할 때는 `PRAYER_STORAGE_BACKEND=sheets`를 지정합니다. 아래 최초 설정은 별도 새 시트 저장소를 만들 때 사용합니다.
 
 ### 1. 새 저장소의 최초 설정
 
@@ -150,11 +150,11 @@ QR 신규 신청은 웹 서버 인스턴스마다 잠시 모아 최대 50건을 
 
 운영 업데이트 시 `submit_batch`를 포함한 Apps Script 버전을 기존 웹 앱 배포에 먼저 적용한 후 Next.js를 배포합니다. 이전 웹 버전의 단건 `submit`도 같은 저장 경로를 사용합니다.
 
-## 기존 Supabase 데이터 이전
+## Supabase에서 시트로 내보내기
 
 이전 도구는 참가자·회차·조·조원·행사 상태·중복 신청 방지 기록을 모두 옮깁니다. UUID, 개인 링크, 수정 버전, 등록·공개 시각을 유지합니다. 기도 체크 기능이 없던 기존 데이터에서 `prayer_checkins`가 누락된 경우에는 빈 체크 기록으로 처리합니다. Supabase의 API 최대 행 수는 1000 이상이어야 합니다.
 
-Node.js 22 이상에서 로컬 `.env.local`에 이전용 `SUPABASE_URL`(기존 `NEXT_PUBLIC_SUPABASE_URL`도 허용)과 `SUPABASE_SERVICE_ROLE_KEY`를 추가합니다. 이 값은 이전 스크립트에서만 사용하며 새 앱 실행에는 필요하지 않습니다.
+Node.js 22 이상에서 로컬 `.env.local`에 `SUPABASE_URL`(기존 `NEXT_PUBLIC_SUPABASE_URL`도 허용)과 `SUPABASE_SERVICE_ROLE_KEY`를 설정합니다.
 
 1. Apps Script를 설정하고 웹 앱 배포 주소·비밀키를 로컬 환경변수에 넣습니다.
 2. 우선 `npm run migrate:sheets -- --export-only`를 실행합니다. 기본 실행도 같은 확인 동작으로, 로컬 백업과 테이블별 행 수만 만들고 구글시트에는 쓰지 않습니다.
@@ -167,9 +167,19 @@ Node.js 22 이상에서 로컬 `.env.local`에 이전용 `SUPABASE_URL`(기존 `
 
 스크립트는 읽기 전후·가져오기 직전·직후에 Supabase 행사 버전을 확인합니다. 버전 검사는 서로 다른 시점의 데이터를 섞어 옮기는 일을 감지하지만, 기존 운영 사이트의 접수를 직접 중단해 주지는 않습니다. 시트에 데이터를 가져온 뒤 원본 변경이 감지되면 운영 전환을 멈추고 두 저장소를 확인해야 합니다.
 
+## 시트에서 Supabase로 이전
+
+Supabase 런타임과 이전 마이그레이션을 적용하고, 대상의 쓰기 차단을 유지한 채 작업합니다. 시트와 Supabase 서버 연결 정보를 `.env.local`에 설정합니다. 스크립트는 전환 직전 양쪽 데이터를 Git에서 제외된 `.tmp.driveupload/migration/`에 보관하고, 참가자 UUID와 편성·기도 체크·중복 신청 키를 포함한 모든 행을 검증합니다.
+
+1. `node scripts/migrate-from-sheets.mjs --export-only`로 시트에서 내보내기가 되는지 확인합니다.
+2. `node scripts/migrate-from-sheets.mjs --freeze-source`로 시트 쓰기를 중단합니다. 최종 이전 동안 운영진도 시트를 직접 수정하지 않습니다.
+3. `node scripts/migrate-from-sheets.mjs --apply`로 옮깁니다. 기존 데이터가 든 대상이라면 스크립트가 표시한 기존 Supabase 버전을 확인해 `--replace-target <버전>`을 함께 지정합니다.
+4. `node scripts/migrate-from-sheets.mjs --verify`로 두 저장소를 비교합니다. 전환할 앱의 관리자 명단, 송출 화면, 개인 링크를 확인합니다.
+5. [`supabase/unfreeze-for-sheets.sql`](supabase/unfreeze-for-sheets.sql)로 Supabase 쓰기를 열고, Supabase에 연결한 배포를 운영 도메인에 연결합니다. 이전 Apps Script는 읽기 전용으로 유지합니다.
+
 ## 배포와 현장 운영
 
-요청한 수정은 검증 후 운영 배포와 반영 확인까지 진행합니다. Vercel의 해당 프로젝트에 `GOOGLE_SHEETS_WEB_APP_URL`, `GOOGLE_SHEETS_API_SECRET`, `ADMIN_PASSWORD`, `NEXT_PUBLIC_TEAMS`를 등록하고 재배포합니다. `NEXT_PUBLIC_SITE_URL`은 주소를 고정할 때만 추가합니다. 기존 관리자 쿠키·수정 링크의 유효성을 유지하려면 전환 중 `ADMIN_PASSWORD`를 바꾸지 않습니다.
+Vercel에서 `PRAYER_STORAGE_BACKEND=supabase`, `SUPABASE_URL`, 서버 전용 `SUPABASE_SECRET_KEY`, `ADMIN_PASSWORD`, `NEXT_PUBLIC_TEAMS`를 설정합니다. 기존 Supabase URL과 `SUPABASE_SERVICE_ROLE_KEY` 환경변수도 지원합니다. `NEXT_PUBLIC_SITE_URL`은 주소를 고정할 때만 추가합니다. 기존 관리자 쿠키·수정 링크의 유효성을 유지하려면 전환 중 `ADMIN_PASSWORD`를 그대로 사용합니다.
 
 배포 전에는 `npm test`, `npm run build`, `node --test scripts/migrate-to-sheets.test.mjs`를 실행합니다. Apps Script 테스트는 `node --test google-apps-script/backend.test.cjs`로 실행합니다. 새 배포에서 신청 → 본인 수정 → 추첨 시작과 자동 공개 → 늦은 참가자 추가 → 지난 회차 복원 → 개인 링크의 본인 기도 체크와 조원 현황 → CSV를 확인합니다.
 
@@ -180,7 +190,7 @@ Node.js 22 이상에서 로컬 `.env.local`에 이전용 `SUPABASE_URL`(기존 `
 5. 참가자는 개인 링크에서 자기 조의 기도제목과 주차별 현황을 확인하고, 우리 조를 위해 기도한 주차에 본인이 체크합니다. 관리자는 `/admin`에서 조별 체크 현황을 확인합니다. 새 기기에서는 관리자에게 **본인용 기도 체크 링크**를 받아 그 기기에서 엽니다.
 6. 행사 종료 뒤 **CSV 내려받기**와 **전체 삭제**로 데이터를 정리합니다. 별도 로컬 백업은 이 작업으로 삭제되지 않습니다.
 
-`node tests/fixture-server.cjs`는 운영 시트와 연결하지 않는 로컬 검증 서버(3030/3031)를 엽니다. 로그인 암호 `fixture-only-password`는 검증 전용입니다. `tests/event-transaction.sql`은 과거 Supabase 스키마용 회귀 검사로, 구글시트 검증에는 사용하지 않습니다.
+`node tests/fixture-server.cjs`는 운영 데이터에 연결하지 않는 로컬 검증 서버(3030/3031)를 엽니다. 로그인 암호 `fixture-only-password`는 검증 전용입니다. `tests/event-transaction.sql`과 `tests/supabase-runtime.sql`은 별도 PostgreSQL 검증 환경에서 실행하고 마지막에 롤백합니다.
 
 ## 구조
 
@@ -195,6 +205,7 @@ src/
   app/api/event/revision/        개인정보 없는 화면 갱신용 버전
   components/RealtimeRefresher.tsx 자동 갱신 확인
   lib/sheets/server.ts           서버 전용 Apps Script 통신
+  lib/supabase/server.ts         서버 전용 Supabase 저장 함수 호출
   lib/event.ts                   공유 조회 캐시·행사 변경
   lib/queries.ts                 조회와 본인 조 찾기
   lib/matching.ts                조 편성 알고리즘
@@ -202,5 +213,6 @@ src/
   lib/participant-access.ts      본인 수정 권한
 google-apps-script/               시트 저장소 코드·매니페스트·테스트
 scripts/migrate-to-sheets.mjs     기존 Supabase 데이터 백업·이전
-supabase/                        과거 스키마·마이그레이션 참고
+scripts/migrate-from-sheets.mjs   시트 데이터 이전·검증
+supabase/                        PostgreSQL 스키마·마이그레이션
 ```

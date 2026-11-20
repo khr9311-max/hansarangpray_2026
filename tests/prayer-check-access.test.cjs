@@ -31,9 +31,9 @@ test('checking a week requires proof for that participant and preserves a submit
   const writes = [];
   const actions = load('src/app/me/[id]/actions.ts', {
     'next/cache': { revalidatePath() {}, revalidateTag() {} },
-    '@/lib/event': { EVENT_CACHE_TAG: 'prayer-sheets-event' },
+    '@/lib/event': { EVENT_CACHE_TAG: 'prayer-event' },
     '@/lib/prayer-access': access,
-    '@/lib/sheets/server': { async sheetRequest(operation, payload) { writes.push({ operation, ...payload }); } },
+    '@/lib/storage': { async storageRequest(operation, payload) { writes.push({ operation, ...payload }); } },
   });
   const request = { id: participantId, roundId, week: 2, checked: false };
   const token = access.prayerCheckToken(participantId);

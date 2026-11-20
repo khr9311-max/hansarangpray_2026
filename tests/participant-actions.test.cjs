@@ -8,23 +8,28 @@ const requestId = '38a8a4fe-0b74-4589-9cf0-3ec119c3981d';
 function harness({ allowed = true, storageError = null, diagnostics = false } = {}) {
   const calls = [], granted = [], prayerAccessGranted = [], invalidated = [], invalidatedTags = [], logs = [];
   let serverCallCount = 0;
-  class SheetsError extends Error {
+  class StorageError extends Error {
     constructor(code, message = 'Storage request failed', failure) { super(message); this.code = code; this.failure = failure; }
   }
   async function storageCall(operation, payload) {
     serverCallCount++;
     calls.push({ operation, payload });
-    if (storageError) throw new SheetsError(storageError.code, storageError.message, storageError.failure);
+    if (storageError) throw new StorageError(storageError.code, storageError.message, storageError.failure);
     return operation === 'edit' ? payload.version + 1 : 'new-participant-id';
   }
   const imports = {
-    '@/lib/sheets/server': { SheetsError, sheetFailureFacts: error => ({ code: error.code, reason: error.failure?.reason ?? 'UNCLASSIFIED' }), async sheetRequest(operation, payload) {
-      assert.equal(operation, 'edit', 'new registrations must use the batching adapter');
-      return storageCall(operation, payload);
-    } },
-    '@/lib/sheets/submissions': { submitToSheets: payload => storageCall('submit', payload) },
+    '@/lib/storage': {
+      StorageError,
+      storageFailureFacts: error => ({ code: error.code, reason: error.failure?.reason ?? 'UNCLASSIFIED' }),
+      retryableStorageError: error => error instanceof StorageError && ['503', '429', 'CONNECTION'].includes(error.code),
+      async storageRequest(operation, payload) {
+        assert.equal(operation, 'edit', 'new registrations must use the registration adapter');
+        return storageCall(operation, payload);
+      },
+      submitRegistration: payload => storageCall('submit', payload),
+    },
     'next/cache': { revalidatePath: (...args) => invalidated.push(args), revalidateTag: tag => invalidatedTags.push(tag) },
-    '@/lib/event': { EVENT_CACHE_TAG: 'prayer-sheets-event' },
+    '@/lib/event': { EVENT_CACHE_TAG: 'prayer-event' },
     '@/lib/prayer-access': { rememberPrayerAccess: async id => prayerAccessGranted.push(id) },
     '@/lib/participant-access': {
       allowParticipantEdit: async () => allowed,
@@ -59,7 +64,7 @@ test('new registration grants only its returned participant ownership', async ()
   assert.equal(h.calls[0].payload.requestId, requestId);
   assert.deepEqual(h.granted, ['new-participant-id']);
   assert.deepEqual(h.prayerAccessGranted, ['new-participant-id']);
-  assert.deepEqual(h.invalidatedTags, ['prayer-sheets-event']);
+  assert.deepEqual(h.invalidatedTags, ['prayer-event']);
 });
 
 test('new registration rejects missing or malformed submission keys before storage access', async () => {

@@ -118,6 +118,18 @@ function doPost(event) {
     if (!spreadsheetId) fail('CONFIG', '저장소를 먼저 설정해 주세요.');
     lock = LockService.getScriptLock();
     if (!lock.tryLock(25000)) fail('503', '다른 신청을 처리하고 있습니다. 잠시 후 다시 시도해 주세요.');
+    if (request.operation === 'migration_status') {
+      return jsonOutput({ ok: true, data: { readOnly: properties.getProperty('MIGRATION_READ_ONLY') === 'true' } });
+    }
+    if (request.operation === 'migration_set_read_only') {
+      if (!request.payload || typeof request.payload.readOnly !== 'boolean') fail('22023', '읽기 전용 상태가 필요합니다.');
+      properties.setProperty('MIGRATION_READ_ONLY', String(request.payload.readOnly));
+      return jsonOutput({ ok: true, data: { readOnly: request.payload.readOnly } });
+    }
+    if (properties.getProperty('MIGRATION_READ_ONLY') === 'true'
+        && ['export', 'snapshot', 'revision', 'participant', 'history'].indexOf(request.operation) === -1) {
+      fail('55000', '저장소 전환 중입니다. 잠시 후 다시 시도해 주세요.');
+    }
     if (request.operation === 'submit' || request.operation === 'submit_batch') {
       // No full event snapshot or SpreadsheetApp round trips on the hot path.
       // One Sheets GET reads the three needed tables and their sheet IDs.
