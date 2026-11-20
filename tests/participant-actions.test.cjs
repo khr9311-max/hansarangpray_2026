@@ -6,7 +6,7 @@ const ts = require('typescript');
 const requestId = '38a8a4fe-0b74-4589-9cf0-3ec119c3981d';
 
 function harness({ allowed = true, storageError = null } = {}) {
-  const calls = [], granted = [], invalidated = [], invalidatedTags = [];
+  const calls = [], granted = [], prayerAccessGranted = [], invalidated = [], invalidatedTags = [];
   let serverCallCount = 0;
   class SheetsError extends Error {
     constructor(code, message = 'Storage request failed') { super(message); this.code = code; }
@@ -20,6 +20,7 @@ function harness({ allowed = true, storageError = null } = {}) {
     } },
     'next/cache': { revalidatePath: (...args) => invalidated.push(args), revalidateTag: tag => invalidatedTags.push(tag) },
     '@/lib/event': { EVENT_CACHE_TAG: 'prayer-sheets-event' },
+    '@/lib/prayer-access': { rememberPrayerAccess: async id => prayerAccessGranted.push(id) },
     '@/lib/participant-access': {
       allowParticipantEdit: async () => allowed,
       rememberParticipantAccess: async id => granted.push(id),
@@ -35,7 +36,7 @@ function harness({ allowed = true, storageError = null } = {}) {
     assert.ok(name in imports, `Unexpected import ${name}`);
     return imports[name];
   } });
-  return { run: data => exports.submitParticipant({ status: 'idle', message: '' }, data), calls, granted, invalidated, invalidatedTags, get serverCallCount() { return serverCallCount; } };
+  return { run: data => exports.submitParticipant({ status: 'idle', message: '' }, data), calls, granted, prayerAccessGranted, invalidated, invalidatedTags, get serverCallCount() { return serverCallCount; } };
 }
 
 function form(overrides = {}) {
@@ -52,6 +53,7 @@ test('new registration grants only its returned participant ownership', async ()
   assert.equal(h.calls[0].operation, 'submit');
   assert.equal(h.calls[0].payload.requestId, requestId);
   assert.deepEqual(h.granted, ['new-participant-id']);
+  assert.deepEqual(h.prayerAccessGranted, ['new-participant-id']);
   assert.deepEqual(h.invalidatedTags, ['prayer-sheets-event']);
 });
 
@@ -93,6 +95,7 @@ test('existing owner or admin edits preserve the participant id and do not grant
   assert.equal(h.calls[0].payload.version, 4);
   assert.equal(h.calls[0].payload.name, '수정이름');
   assert.deepEqual(h.granted, []);
+  assert.deepEqual(h.prayerAccessGranted, []);
 });
 
 test('a valid participant edit link grants browser ownership only after saving', async () => {
@@ -145,6 +148,7 @@ test('browser submission keys are shared across simultaneous tabs and change onl
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
     }).outputText;
     vm.runInNewContext(code, { ...globals, exports, require(name) {
+      if (name === '@/lib/prayer-weeks') return { PRAYER_ACCESS_SECONDS: 45 * 86400 };
       assert.ok(['react/jsx-runtime', 'react', 'react-dom', 'next/link', '@/app/actions', '@/lib/types'].includes(name));
       return {};
     } });

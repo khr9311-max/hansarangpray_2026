@@ -5,6 +5,7 @@ import { useFormStatus } from 'react-dom';
 import Link from 'next/link';
 import { submitParticipant, type SubmitState } from '@/app/actions';
 import { TEAMS, type Participant } from '@/lib/types';
+import { PRAYER_ACCESS_SECONDS } from '@/lib/prayer-weeks';
 
 const initialState: SubmitState = { status: 'idle', message: '' };
 
@@ -15,8 +16,8 @@ const initialState: SubmitState = { status: 'idle', message: '' };
  */
 const STORAGE_KEY = 'jjak_participant';
 const SUBMISSION_KEY = 'jjak_submission_request';
-/** 다음 행사 때 지난 행사의 죽은 링크가 남지 않도록 하루가 지나기 전에 잊습니다. */
-const REMEMBER_MS = 12 * 60 * 60 * 1000;
+const RETRY_MS = 12 * 60 * 60 * 1000;
+const REMEMBER_MS = PRAYER_ACCESS_SECONDS * 1000;
 
 type Remembered = { id: string; at: number };
 
@@ -27,7 +28,7 @@ export async function getSubmissionRequest(reset = false): Promise<string> {
       try {
         const saved = JSON.parse(localStorage.getItem(SUBMISSION_KEY) ?? 'null') as Partial<Remembered> | null;
         if (saved && typeof saved.id === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(saved.id)
-          && typeof saved.at === 'number' && Date.now() - saved.at < REMEMBER_MS) return saved.id;
+          && typeof saved.at === 'number' && Date.now() - saved.at < RETRY_MS) return saved.id;
       } catch { /* Storage may be unavailable; this tab still retains its request key. */ }
     }
     const id = crypto.randomUUID();
@@ -198,7 +199,7 @@ export default function ParticipantForm({ participant, editToken = '' }: { parti
         <MyPairLink id={state.participantId} showEdit={!participant} />
         {participant && <button type="button" className="mt-4 text-sm underline" onClick={() => { setEditVersion(participant.edit_version); setStartingOver(true); }}>다시 수정하기</button>}
         <p className="mt-3 text-xs text-slate-400">
-          매칭이 확정되면 이 링크에서 기도짝의 기도제목을 볼 수 있어요.
+          앞으로 한 달 동안 이 화면에서 기도짝을 확인하고 매주 기도를 체크할 수 있어요.
         </p>
 
         {!participant && <StartOverButton onClick={startOver} />}

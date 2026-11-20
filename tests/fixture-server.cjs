@@ -24,6 +24,8 @@ function createFixtureServer() {
     match_control: [{ id: true, revision: 0, draw_started_at: new Date(Date.now() - 10000).toISOString() }],
     participant_submissions: [],
   };
+  // New normalized tables start empty while the real backend owns their rules.
+  for (const table of Object.keys(backend.TABLES)) state[table] ??= [];
   backend.validateState(state);
   const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 

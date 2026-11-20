@@ -1,9 +1,13 @@
 import Link from 'next/link';
+import PrayerWeekChecks from '@/components/PrayerWeekChecks';
 import RealtimeRefresher from '@/components/RealtimeRefresher';
 import { getMyGroup, getParticipant } from '@/lib/queries';
 import { getEventSnapshot } from '@/lib/event';
+import { canCheckPrayer } from '@/lib/prayer-access';
+import { PRAYER_WEEKS } from '@/lib/prayer-weeks';
 
 export const dynamic = 'force-dynamic';
+const EMPTY_CHECKS = [false, false, false, false] as const;
 
 export default async function MyGroupPage({
   params,
@@ -11,7 +15,9 @@ export default async function MyGroupPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [me, group, snapshot] = await Promise.all([getParticipant(id), getMyGroup(id), getEventSnapshot()]);
+  const [me, group, snapshot, canCheck] = await Promise.all([
+    getParticipant(id), getMyGroup(id), getEventSnapshot(), canCheckPrayer(id).catch(() => false),
+  ]);
 
   if (!me) {
     return (
@@ -54,12 +60,13 @@ export default async function MyGroupPage({
             <p className="text-center text-sm text-slate-400">
               {group.groupNumber}조 · {group.members.length}명
             </p>
+            <p className="rounded-xl bg-brand-50 px-4 py-3 text-sm leading-relaxed text-brand-700">기도한 주차에 체크해 주세요. 같은 조에서 서로의 체크를 볼 수 있어요.</p>
 
-            {group.members.map((member) => {
+            {group.members.map((member, memberIndex) => {
               const isMe = member.id === me.id;
               return (
                 <div
-                  key={member.id}
+                  key={isMe ? 'self' : `peer-${memberIndex}`}
                   className={`rounded-2xl border p-5 shadow-sm ${
                     isMe
                       ? 'border-slate-200 bg-slate-50'
@@ -76,6 +83,23 @@ export default async function MyGroupPage({
                   <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-slate-600">
                     {member.prayer_request}
                   </p>
+                  {isMe && canCheck && snapshot.round ? (
+                    <PrayerWeekChecks key={snapshot.round.id} id={me.id} roundId={snapshot.round.id} checks={member.prayerChecks ?? EMPTY_CHECKS} />
+                  ) : (
+                    <div className="mt-4 border-t border-slate-200 pt-4">
+                      <p className="text-sm font-semibold text-slate-700">기도 체크</p>
+                      <ul className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4" aria-label={`${member.name}님의 주차별 기도 체크`}>
+                        {PRAYER_WEEKS.map((week, index) => {
+                          const checked = (member.prayerChecks ?? EMPTY_CHECKS)[index];
+                          return <li key={week} className={`rounded-xl border px-3 py-3 text-xs ${checked ? 'border-brand-200 bg-brand-50 text-brand-700' : 'border-slate-200 bg-slate-50 text-slate-500'}`}>
+                            <span className="block font-semibold">{week}주차</span>
+                            <span className="mt-1 block"><span aria-hidden="true" className="mr-1">{checked ? '✓' : '○'}</span>{checked ? '기도했어요' : '미체크'}</span>
+                          </li>;
+                        })}
+                      </ul>
+                      {isMe && !canCheck && <p className="mt-3 text-xs leading-relaxed text-slate-500">신청한 기기에서 열거나 운영자에게 본인용 기도 체크 링크를 요청해 주세요.</p>}
+                    </div>
+                  )}
                 </div>
               );
             })}

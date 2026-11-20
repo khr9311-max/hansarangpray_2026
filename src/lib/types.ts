@@ -5,6 +5,7 @@ export type Participant = {
   team: string;
   prayer_request: string;
   created_at: string;
+  prayerChecks?: [boolean, boolean, boolean, boolean];
 };
 
 /** 매칭 방식 */

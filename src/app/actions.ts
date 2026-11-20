@@ -4,6 +4,7 @@ import { sheetRequest, SheetsError } from '@/lib/sheets/server';
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { EVENT_CACHE_TAG } from '@/lib/event';
 import { allowParticipantEdit, rememberParticipantAccess, validEditToken } from '@/lib/participant-access';
+import { rememberPrayerAccess } from '@/lib/prayer-access';
 import { TEAMS } from '@/lib/types';
 
 export type SubmitState = {
@@ -69,7 +70,9 @@ export async function submitParticipant(
     revalidateTag(EVENT_CACHE_TAG);
     // 관리자 권한으로만 수정한 경우 본인용 권한을 새로 부여하지 않습니다.
     // 전달받은 유효한 수정 링크는 저장 후 같은 브라우저에서 계속 쓸 수 있습니다.
-    if (!id || validEditToken(id, editToken)) await rememberParticipantAccess(participantId);
+    if (!id || validEditToken(id, editToken)) {
+      await Promise.all([rememberParticipantAccess(participantId), rememberPrayerAccess(participantId)]);
+    }
     revalidatePath('/admin'); revalidatePath('/display'); revalidatePath('/me', 'layout');
     revalidatePath(`/edit/${participantId}`);
     return {

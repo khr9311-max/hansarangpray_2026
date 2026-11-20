@@ -8,7 +8,7 @@ const clone = value => JSON.parse(JSON.stringify(value));
 const secret = 'test-only-private-key-with-at-least-32-characters';
 function empty() {
   return { participants: [], match_rounds: [], match_groups: [], match_members: [],
-    match_control: [{ id: true, revision: 0, draw_started_at: null }], participant_submissions: [] };
+    match_control: [{ id: true, revision: 0, draw_started_at: null }], participant_submissions: [], prayer_checkins: [] };
 }
 function harness() {
   let stored = empty(), writes = 0, locks = 0, failWrite = false;
@@ -46,8 +46,9 @@ function harness() {
   function publish(target = 2, mode = 'team', draw) {
     return command('publish', { target, mode, draw, confirm: '재편성', assignments: stored.participants.map((p, i) => ({ participant_id: p.id, group_number: Math.floor(i / target) + 1 })) });
   }
+  function check(id, week, checked, roundId = stored.match_rounds.find(r => r.is_active)?.id) { return call('check_prayer', { id, roundId, week, checked }); }
   return { context, call, ok, submit, command, publish, state: () => clone(stored), writes: () => writes, locks: () => locks, now: () => clock,
-    advanceTime: milliseconds => { clock += milliseconds; }, failWrites: () => { failWrite = true; } };
+    check, advanceTime: milliseconds => { clock += milliseconds; }, failWrites: () => { failWrite = true; } };
 }
 
 test('authentication rejects requests before accessing storage; GET reveals no records', () => {
@@ -231,6 +232,180 @@ test('single-button publish schedules draw atomically and pending draws reject r
   const saved = h.state();
   assert.equal(h.publish(3, 'team', 'true').error.code, '22023');
   assert.deepEqual(h.state(), saved);
+});
+
+test('weekly checks default false and merge individual weeks without changing participant rows', () => {
+  const h = harness(), id = h.submit(); h.submit(); h.publish();
+  const storedPeople = h.state().participants;
+  assert.deepEqual(h.ok('participant', { id }).prayerChecks, [false, false, false, false]);
+  assert.deepEqual(h.ok('snapshot').round.groups[0].members[0].prayerChecks, [false, false, false, false]);
+  const beforeNoop = h.state(), noOpWrites = h.writes();
+  assert.equal(h.check(id, 2, false).data, false);
+  assert.deepEqual(h.state(), beforeNoop);
+  assert.equal(h.writes(), noOpWrites);
+  assert.equal(h.check(id, 2, true).data, true);
+  assert.equal(h.state().match_control[0].revision, beforeNoop.match_control[0].revision + 1);
+  assert.equal(h.check(id, 4, true).data, true);
+  assert.deepEqual(h.ok('participant', { id }).prayerChecks, [false, true, false, true]);
+  assert.equal(h.check(id, 2, false).data, false);
+  assert.equal(h.check(id, 1, true).data, true);
+  assert.equal(h.check(id, 3, true).data, true);
+  const beforeRepeat = h.state(), writes = h.writes();
+  assert.equal(h.check(id, 3, true).data, true);
+  assert.deepEqual(h.state(), beforeRepeat);
+  assert.equal(h.writes(), writes);
+  assert.deepEqual(h.state().participants, storedPeople);
+  assert.equal(h.state().prayer_checkins.length, 1);
+  const snapshot = h.ok('snapshot');
+  assert.deepEqual(snapshot.participants.find(p => p.id === id).prayerChecks, [true, false, true, true]);
+  assert.deepEqual(snapshot.round.groups.flatMap(g => g.members).find(p => p.id === id).prayerChecks, [true, false, true, true]);
+  assert.ok(h.ok('export').participants.every(p => !Object.hasOwn(p, 'prayerChecks')));
+});
+
+test('weekly checks reject invalid values, stale round IDs and people outside the active group', () => {
+  const h = harness(), id = h.submit(); h.submit();
+  assert.equal(h.check(id, 1, true, randomUUID()).error.code, '40001');
+  h.publish();
+  const oldRoundId = h.state().match_rounds.find(r => r.is_active).id;
+  const pendingId = h.submit('미배정');
+  const before = h.state();
+  assert.equal(h.check(pendingId, 1, true).error.code, 'P0002');
+  assert.equal(h.check(randomUUID(), 1, true).error.code, 'P0002');
+  for (const week of [0, 5, '1', true, 1.5]) assert.equal(h.check(id, week, true).error.code, '22023');
+  for (const checked of [0, 1, 'true', null]) assert.equal(h.check(id, 1, checked).error.code, '22023');
+  assert.equal(h.check('invalid', 1, true).error.code, '22023');
+  assert.equal(h.check(id, 1, true, 'invalid').error.code, '22023');
+  assert.deepEqual(h.state(), before);
+  h.publish(3);
+  assert.equal(h.check(id, 1, true, oldRoundId).error.code, '40001');
+  assert.equal(h.command('unpublish').ok, true);
+  assert.equal(h.check(id, 1, true, oldRoundId).error.code, '40001');
+});
+
+test('weekly checks survive redeals and restoration and cascade on participant deletion and reset', () => {
+  const h = harness(), id = h.submit(); h.submit();
+  h.publish(2); const firstRoundId = h.state().match_rounds[0].id;
+  assert.equal(h.check(id, 1, true).ok, true);
+  assert.equal(h.check(id, 4, true).ok, true);
+  h.publish(3);
+  assert.deepEqual(h.ok('participant', { id }).prayerChecks, [true, false, false, true]);
+  assert.equal(h.command('restore', { roundId: firstRoundId }).ok, true);
+  assert.deepEqual(h.ok('snapshot').round.groups.flatMap(g => g.members).find(p => p.id === id).prayerChecks, [true, false, false, true]);
+  assert.equal(h.command('delete', { id }).ok, true);
+  assert.equal(h.state().prayer_checkins.length, 0);
+  const otherId = h.state().participants[0].id;
+  assert.equal(h.check(otherId, 2, true).ok, true);
+  assert.equal(h.command('reset', { confirm: '삭제' }).ok, true);
+  assert.equal(h.state().prayer_checkins.length, 0);
+});
+
+test('legacy imports omit optional weekly-check table and new backups validate its rows', () => {
+  const origin = harness(), id = origin.submit(); origin.submit(); origin.publish();
+  const legacy = origin.ok('export'); delete legacy.prayer_checkins;
+  const target = harness();
+  assert.equal(target.ok('import', { data: legacy }).prayer_checkins, 0);
+  assert.deepEqual(target.ok('participant', { id }).prayerChecks, [false, false, false, false]);
+  assert.equal(target.ok('import', { data: legacy }).prayer_checkins, 0);
+  origin.check(id, 3, true);
+  const backup = origin.ok('export');
+  const restored = harness();
+  assert.equal(restored.ok('import', { data: backup }).prayer_checkins, 1);
+  assert.deepEqual(restored.ok('participant', { id }).prayerChecks, [false, false, true, false]);
+  assert.equal(restored.call('import', { data: legacy }).error.code, '409', 'legacy restore must not erase existing checks');
+  for (const badRows of [
+    [{ participant_id: randomUUID(), week_1: false, week_2: false, week_3: false, week_4: false }],
+    [{ participant_id: id, week_1: 'true', week_2: false, week_3: false, week_4: false }],
+    [backup.prayer_checkins[0], backup.prayer_checkins[0]],
+  ]) {
+    const invalid = clone(backup); invalid.prayer_checkins = badRows;
+    assert.equal(harness().call('import', { data: invalid }).error.code, '22023');
+  }
+});
+
+test('missing optional tab reads empty and its initializer changes only that tab without seeding false rows', () => {
+  const h = harness(), c = h.context, source = fs.readFileSync(__dirname + '/Code.gs', 'utf8');
+  vm.runInContext(source.slice(source.indexOf('function readTable('), source.indexOf('\nfunction readState(')), c);
+  assert.deepEqual(clone(c.readTable({ getSheetByName: () => null }, 'prayer_checkins')), []);
+  assert.throws(() => c.readTable({ getSheetByName: () => null }, 'participants'), e => e.code === 'CONFIG');
+  let exists = false, headerWrites = 0, validations = 0, removedValidations = 0, hidden = false, headers;
+  const range = {
+    setValues: rows => { headerWrites++; headers = rows[0]; return range; }, getValues: () => [headers],
+    setBackground: () => range, setFontColor: () => range, setFontWeight: () => range,
+    setDataValidation: () => { validations++; return range; },
+  };
+  const sheet = { getLastRow: () => exists && headers ? 1 : 0, getRange: (...args) => {
+    if (args[0] > 1) return { clearDataValidations: () => { removedValidations++; }, setDataValidation: () => { validations++; }, setValues: () => assert.fail('must not seed idle checkbox rows') };
+    return range;
+  }, setFrozenRows() {}, setColumnWidth() {}, setColumnWidths() {}, getMaxRows: () => 1000, hideSheet: () => { hidden = true; } };
+  const spreadsheet = { getSheetByName: name => { assert.equal(name, 'prayer_checkins'); return exists ? sheet : null; },
+    insertSheet: name => { assert.equal(name, 'prayer_checkins'); exists = true; return sheet; } };
+  c.SpreadsheetApp.newDataValidation = () => ({ requireCheckbox: () => ({ build: () => ({}) }) });
+  c.initializePrayerCheckins(spreadsheet); c.initializePrayerCheckins(spreadsheet);
+  assert.equal(headerWrites, 1);
+  assert.equal(validations, 0, 'empty rows must never receive native checkbox validation');
+  assert.equal(removedValidations, 2);
+  assert.equal(hidden, true);
+  assert.deepEqual(clone(headers), ['participant_id', 'week_1', 'week_2', 'week_3', 'week_4']);
+});
+
+test('weekly setup cleans phantom false defaults without touching real records or checked orphan data', () => {
+  const h = harness(), c = h.context, id = randomUUID();
+  const headers = ['participant_id', 'week_1', 'week_2', 'week_3', 'week_4'];
+  const grid = [headers, ['', false, false, false, false], [id, true, false, true, false], ['', false, false, false, false], ['', true, false, false, false]];
+  const originalRecord = clone(grid[2]); let clearedValidation = false, validatedRows = [];
+  const sheet = {
+    getLastRow: () => grid.length, getMaxRows: () => 1000, setFrozenRows() {}, setColumnWidth() {}, setColumnWidths() {}, hideSheet() {},
+    getRange(row, column, rowCount = 1, columnCount = 1) {
+      const range = {
+        getValues: () => grid.slice(row - 1, row - 1 + rowCount).map(values => values.slice(column - 1, column - 1 + columnCount)),
+        setBackground: () => range, setFontColor: () => range, setFontWeight: () => range,
+        clearDataValidations: () => { clearedValidation = true; },
+        clearContent: () => {
+          for (let i = row - 1; i < row - 1 + rowCount; i++) for (let j = column - 1; j < column - 1 + columnCount; j++) grid[i][j] = '';
+        },
+        setDataValidation: () => {
+          assert.ok(grid[row - 1][0], 'must not validate a blank-ID row');
+          validatedRows.push(row);
+          // Model the actual native behavior that caused the production issue.
+          for (let i = row - 1; i < row - 1 + rowCount; i++) for (let j = column - 1; j < column - 1 + columnCount; j++) if (grid[i][j] === '') grid[i][j] = false;
+        },
+      }; return range;
+    },
+  };
+  const spreadsheet = { getSheetByName: () => sheet };
+  c.SpreadsheetApp.newDataValidation = () => ({ requireCheckbox: () => ({ build: () => ({}) }) });
+  c.initializePrayerCheckins(spreadsheet);
+  assert.equal(clearedValidation, true);
+  assert.deepEqual(grid[1], ['', '', '', '', '']);
+  assert.deepEqual(grid[2], originalRecord);
+  assert.deepEqual(grid[3], ['', '', '', '', '']);
+  assert.deepEqual(grid[4], ['', true, false, false, false], 'checked orphan row must not be silently erased');
+  assert.deepEqual(validatedRows, [3]);
+  const source = fs.readFileSync(__dirname + '/Code.gs', 'utf8');
+  vm.runInContext(source.slice(source.indexOf('function readTable('), source.indexOf('\nfunction readState(')), c);
+  const read = clone(c.readTable(spreadsheet, 'prayer_checkins'));
+  assert.equal(read.length, 2);
+  const state = empty(); state.prayer_checkins = read;
+  assert.throws(() => c.validateState(state), e => e.code === '22023', 'checked row without participant ID remains an error');
+});
+
+test('weekly check and revision are sent in the same batch without participant row writes', () => {
+  const h = harness(), c = h.context, id = h.submit(); h.submit(); h.publish();
+  const before = h.state(); h.check(id, 2, true); const after = h.state();
+  let sent;
+  c.ScriptApp = { getOAuthToken: () => 'test-token' };
+  c.UrlFetchApp = { fetch: (_, options) => { sent = JSON.parse(options.payload); return { getResponseCode: () => 200 }; } };
+  const source = fs.readFileSync(__dirname + '/Code.gs', 'utf8');
+  vm.runInContext(source.slice(source.indexOf('function commitState('), source.indexOf('\nfunction validatePerson(')), c);
+  const names = Object.keys(before);
+  c.commitState({ getId: () => 'test-sheet', getSheetByName: name => ({ getSheetId: () => names.indexOf(name), getLastRow: () => 2, getMaxRows: () => 1000 }) }, before, after);
+  assert.deepEqual(sent.requests.map(r => names[r.updateCells.range.sheetId]).sort(), ['match_control', 'prayer_checkins']);
+  const checkWrite = sent.requests.find(r => names[r.updateCells.range.sheetId] === 'prayer_checkins').updateCells;
+  assert.deepEqual(checkWrite.rows[0].values.slice(1).map(cell => cell.userEnteredValue.boolValue), [false, true, false, false]);
+  assert.equal(checkWrite.fields, 'userEnteredValue,dataValidation');
+  assert.equal(checkWrite.rows.length, 1, 'only populated records receive checkbox validation');
+  assert.equal(checkWrite.rows[0].values[0].dataValidation, undefined);
+  for (const cell of checkWrite.rows[0].values.slice(1)) assert.deepEqual(cell.dataValidation, { condition: { type: 'BOOLEAN' }, strict: true, showCustomUi: true });
 });
 
 test('upstream commit failure never reports success or leaks upstream details', () => {

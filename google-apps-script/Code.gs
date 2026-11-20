@@ -10,7 +10,8 @@ var TABLES = {
   match_groups: ['id', 'round_id', 'group_number'],
   match_members: ['group_id', 'participant_id', 'seq'],
   match_control: ['id', 'revision', 'draw_started_at'],
-  participant_submissions: ['request_id', 'participant_id']
+  participant_submissions: ['request_id', 'participant_id'],
+  prayer_checkins: ['participant_id', 'week_1', 'week_2', 'week_3', 'week_4']
 };
 var UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
@@ -28,6 +29,7 @@ function setup() {
   lock.waitLock(30000);
   try {
     Object.keys(TABLES).forEach(function (name) {
+      if (name === 'prayer_checkins') { initializePrayerCheckins(spreadsheet); return; }
       var sheet = spreadsheet.getSheetByName(name) || spreadsheet.insertSheet(name);
       var headers = TABLES[name];
       if (sheet.getLastRow() === 0) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
@@ -46,6 +48,54 @@ function setup() {
     readState(spreadsheet); // Validate existing data; setup never overwrites it.
   } finally { lock.releaseLock(); }
   console.log('설정 완료: ' + spreadsheet.getUrl() + ' / API 비밀키는 프로젝트 설정의 스크립트 속성에서 확인하세요.');
+}
+
+/** Existing installations: run this once to add only the weekly-check tab. */
+function setupPrayerCheckins() {
+  var spreadsheetId = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
+  var spreadsheet = spreadsheetId ? SpreadsheetApp.openById(spreadsheetId) : SpreadsheetApp.getActiveSpreadsheet();
+  if (!spreadsheet) fail('CONFIG', '저장소 setup 함수를 먼저 실행해 주세요.');
+  var lock = LockService.getScriptLock(); lock.waitLock(30000);
+  try {
+    initializePrayerCheckins(spreadsheet);
+    SpreadsheetApp.flush();
+    readState(spreadsheet);
+  } finally { lock.releaseLock(); }
+  console.log('주차별 기도 확인 저장소 설정을 완료했습니다.');
+}
+function initializePrayerCheckins(spreadsheet) {
+  var sheet = spreadsheet.getSheetByName('prayer_checkins') || spreadsheet.insertSheet('prayer_checkins');
+  var headers = TABLES.prayer_checkins;
+  if (sheet.getLastRow() === 0) sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  verifyHeaders(sheet, headers);
+  sheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, headers.length).setBackground('#f1f3f4').setFontColor('#202124').setFontWeight('bold');
+  sheet.setColumnWidth(1, 320); sheet.setColumnWidths(2, 4, 100);
+  if (sheet.getMaxRows() > 1) {
+    // Native checkbox validation can materialize FALSE in blank cells. Remove
+    // the earlier full-column validation, then clean only safe orphan defaults.
+    sheet.getRange(2, 2, sheet.getMaxRows() - 1, 4).clearDataValidations();
+    var rows = sheet.getLastRow() > 1 ? sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getValues() : [];
+    var firstBlank = null;
+    rows.forEach(function (row, index) {
+      var rowNumber = index + 2;
+      if (isBlankPrayerPlaceholder(row)) {
+        if (firstBlank === null) firstBlank = rowNumber;
+      } else {
+        if (firstBlank !== null) { sheet.getRange(firstBlank, 2, rowNumber - firstBlank, 4).clearContent(); firstBlank = null; }
+        // Validate only already-populated boolean records. Invalid records are
+        // retained for validation below instead of being silently rewritten.
+        if (row[0] !== '' && row.slice(1).every(function (value) { return typeof value === 'boolean'; })) {
+          sheet.getRange(rowNumber, 2, 1, 4).setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
+        }
+      }
+    });
+    if (firstBlank !== null) sheet.getRange(firstBlank, 2, rows.length + 2 - firstBlank, 4).clearContent();
+  }
+  sheet.hideSheet();
+}
+function isBlankPrayerPlaceholder(row) {
+  return (row[0] === '' || row[0] === null) && row.slice(1).every(function (value) { return value === '' || value === null || value === false; });
 }
 
 function doGet() {
@@ -78,7 +128,7 @@ function doPost(event) {
       var participantId = request.payload && request.payload.id;
       assertUuid(participantId);
       var participant = readTable(spreadsheet, 'participants').filter(function (p) { return p.id === participantId; })[0] || null;
-      return jsonOutput({ ok: true, data: participant });
+      return jsonOutput({ ok: true, data: participant ? withPrayerChecks(participant, readTable(spreadsheet, 'prayer_checkins')) : null });
     }
     var state = readState(spreadsheet);
     var before = JSON.parse(JSON.stringify(state));
@@ -111,11 +161,14 @@ function verifyHeaders(sheet, expected) {
 }
 function readTable(spreadsheet, name) {
   var sheet = spreadsheet.getSheetByName(name);
+  // Existing installations stay readable until setup adds this optional tab.
+  if (!sheet && name === 'prayer_checkins') return [];
   if (!sheet) fail('CONFIG', '저장소 setup 함수를 먼저 실행해 주세요.');
   var headers = TABLES[name]; verifyHeaders(sheet, headers);
   var length = sheet.getLastRow() - 1;
   if (length < 1) return [];
   return sheet.getRange(2, 1, length, headers.length).getValues().filter(function (row) {
+    if (name === 'prayer_checkins' && isBlankPrayerPlaceholder(row)) return false;
     return row.some(function (value) { return value !== ''; });
   }).map(function (row) {
     var record = {};
@@ -143,14 +196,20 @@ function asCell(value) {
 function commitState(spreadsheet, before, after) {
   var requests = [];
   Object.keys(TABLES).forEach(function (name) {
-    if (JSON.stringify(before[name]) === JSON.stringify(after[name])) return;
+    var previousRows = before[name] || [], nextRows = after[name] || [];
+    if (JSON.stringify(previousRows) === JSON.stringify(nextRows)) return;
     var sheet = spreadsheet.getSheetByName(name), columns = TABLES[name];
-    var rowCount = Math.max(before[name].length, after[name].length, sheet.getLastRow() - 1) + 1;
+    if (!sheet) fail('CONFIG', '저장소 setup 함수를 먼저 실행해 주세요.');
+    var rowCount = Math.max(previousRows.length, nextRows.length, sheet.getLastRow() - 1) + 1;
     if (rowCount > sheet.getMaxRows()) requests.push({ appendDimension: { sheetId: sheet.getSheetId(), dimension: 'ROWS', length: rowCount - sheet.getMaxRows() } });
     requests.push({ updateCells: {
       range: { sheetId: sheet.getSheetId(), startRowIndex: 1, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: columns.length },
-      rows: after[name].map(function (record) { return { values: columns.map(function (column) { return asCell(record[column]); }) }; }),
-      fields: 'userEnteredValue'
+      rows: nextRows.map(function (record) { return { values: columns.map(function (column, index) {
+        var cell = asCell(record[column]);
+        if (name === 'prayer_checkins' && index > 0) cell.dataValidation = { condition: { type: 'BOOLEAN' }, strict: true, showCustomUi: true };
+        return cell;
+      }) }; }),
+      fields: name === 'prayer_checkins' ? 'userEnteredValue,dataValidation' : 'userEnteredValue'
     } });
   });
   if (!requests.length) return;
@@ -184,6 +243,7 @@ function uniqueIndex(rows, key) {
 }
 function validateState(state) {
   if (!state || typeof state !== 'object') fail('22023', '저장소 데이터가 필요합니다.');
+  if (state.prayer_checkins === undefined) state.prayer_checkins = [];
   Object.keys(TABLES).forEach(function (name) { if (!Array.isArray(state[name])) fail('22023', '저장소 데이터 구성을 확인해 주세요.'); });
   if (state.match_control.length !== 1) fail('CONFIG', '행사 상태 행은 하나여야 합니다.');
   validateControl(state.match_control[0]);
@@ -216,15 +276,23 @@ function validateState(state) {
     if (submissions[s.request_id] || !participants[s.participant_id]) fail('22023', '신청 재시도 연결을 확인해 주세요.');
     submissions[s.request_id] = true;
   });
+  uniqueIndex(state.prayer_checkins, 'participant_id');
+  state.prayer_checkins.forEach(function (checkin) {
+    if (!participants[checkin.participant_id] || [1, 2, 3, 4].some(function (week) { return typeof checkin['week_' + week] !== 'boolean'; })) fail('22023', '주차별 기도 확인 값을 확인해 주세요.');
+  });
 }
 
+function withPrayerChecks(person, checkins) {
+  var checkin = (checkins || []).filter(function (row) { return row.participant_id === person.id; })[0];
+  return Object.assign({}, person, { prayerChecks: [1, 2, 3, 4].map(function (week) { return !!checkin && checkin['week_' + week] === true; }) });
+}
 function snapshot(state) {
   var round = state.match_rounds.filter(function (r) { return r.is_active; })[0];
   var people = {}, control = state.match_control[0];
-  state.participants.forEach(function (p) { people[p.id] = p; });
+  state.participants.forEach(function (p) { people[p.id] = withPrayerChecks(p, state.prayer_checkins); });
   return {
     revision: control.revision, drawStartedAt: control.draw_started_at, serverTime: nowIso(),
-    participants: state.participants.slice().sort(function (a, b) { return b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id); }),
+    participants: state.participants.slice().sort(function (a, b) { return b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id); }).map(function (p) { return people[p.id]; }),
     round: round ? {
       id: round.id, mode: round.mode, targetSize: round.target_size, createdAt: round.created_at,
       groups: state.match_groups.filter(function (g) { return g.round_id === round.id; }).sort(function (a, b) { return a.group_number - b.group_number; }).map(function (g) {
@@ -263,6 +331,7 @@ function assertDrawIdle(control) {
 }
 
 function applyOperation(state, operation, payload) {
+  if (state.prayer_checkins === undefined) state.prayer_checkins = [];
   var control = state.match_control[0], person, active, data;
   if (operation === 'snapshot') return { data: snapshot(state), changed: false };
   if (operation === 'history') return { data: roundHistory(state), changed: false };
@@ -300,6 +369,25 @@ function applyOperation(state, operation, payload) {
     person.name = edited.name; person.team = edited.team; person.prayer_request = edited.prayer_request;
     person.edit_version++; control.revision++;
     return { data: person.edit_version, changed: true };
+  }
+  if (operation === 'check_prayer') {
+    assertUuid(payload.id); assertUuid(payload.roundId);
+    if (!isInteger(payload.week, 1) || payload.week > 4 || typeof payload.checked !== 'boolean') fail('22023', '주차와 기도 확인 값을 확인해 주세요.');
+    active = state.match_rounds.filter(function (r) { return r.is_active; })[0];
+    if (!active || active.id !== payload.roundId) fail('40001', '조 편성이 변경되었습니다. 최신 기도짝을 확인해 주세요.');
+    var groupIds = {};
+    state.match_groups.forEach(function (g) { if (g.round_id === active.id) groupIds[g.id] = true; });
+    if (!state.match_members.some(function (m) { return groupIds[m.group_id] && m.participant_id === payload.id; })) fail('P0002', '현재 조에 배정된 참가자만 기도 확인을 기록할 수 있습니다.');
+    var checkin = state.prayer_checkins.filter(function (row) { return row.participant_id === payload.id; })[0];
+    var key = 'week_' + payload.week;
+    if ((checkin ? checkin[key] : false) === payload.checked) return { data: payload.checked, changed: false };
+    if (!checkin) {
+      checkin = { participant_id: payload.id, week_1: false, week_2: false, week_3: false, week_4: false };
+      state.prayer_checkins.push(checkin);
+    }
+    checkin[key] = payload.checked;
+    control.revision++;
+    return { data: payload.checked, changed: true };
   }
   if (operation !== 'command' && operation !== 'append') fail('22023', '지원하지 않는 작업입니다.');
   if (!isInteger(payload.revision, 0) || payload.revision !== control.revision) fail('40001', '다른 기기의 조작 또는 새 신청이 반영되었습니다.');
@@ -355,6 +443,7 @@ function applyOperation(state, operation, payload) {
     state.participants = state.participants.filter(function (p) { return p.id !== body.id; });
     state.match_members = state.match_members.filter(function (m) { return m.participant_id !== body.id; });
     state.participant_submissions = state.participant_submissions.filter(function (s) { return s.participant_id !== body.id; });
+    state.prayer_checkins = state.prayer_checkins.filter(function (row) { return row.participant_id !== body.id; });
   } else if (action === 'reset' && body.confirm === '삭제') {
     Object.keys(TABLES).forEach(function (name) { if (name !== 'match_control') state[name] = []; }); control.draw_started_at = null;
   } else fail('22023', '지원하지 않는 작업이거나 확인 문구가 없습니다.');
@@ -362,11 +451,11 @@ function applyOperation(state, operation, payload) {
   return { data: null, changed: true };
 }
 function tableCounts(state) {
-  var counts = {}; Object.keys(TABLES).forEach(function (name) { counts[name] = state[name].length; }); return counts;
+  var counts = {}; Object.keys(TABLES).forEach(function (name) { counts[name] = (state[name] || []).length; }); return counts;
 }
 function canonicalState(state) {
   return JSON.stringify(Object.keys(TABLES).map(function (name) {
-    return state[name].map(function (row) { return TABLES[name].map(function (column) { return row[column]; }); })
+    return (state[name] || []).map(function (row) { return TABLES[name].map(function (column) { return row[column]; }); })
       .sort(function (a, b) { return JSON.stringify(a).localeCompare(JSON.stringify(b)); });
   }));
 }

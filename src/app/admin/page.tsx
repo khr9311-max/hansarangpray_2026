@@ -2,6 +2,7 @@ import Link from 'next/link';
 import ActionForm from '@/components/ActionForm';
 import { getEventSnapshot, getRoundHistory } from '@/lib/event';
 import { editToken } from '@/lib/participant-access';
+import { prayerCheckToken } from '@/lib/prayer-access';
 import LoginForm from './LoginForm';
 import RealtimeRefresher from '@/components/RealtimeRefresher';
 import { isAdmin } from '@/lib/auth';
@@ -249,6 +250,7 @@ export default async function AdminPage() {
                         {participant.name}
                         <Link prefetch={false} href={`/edit/${participant.id}`} className="mt-1 block text-xs text-brand-600 underline">정보 수정</Link>
                         <Link prefetch={false} href={`/edit/${participant.id}?token=${editToken(participant.id)}`} className="mt-1 block text-xs text-slate-500 underline">본인 전달용 수정 링크</Link>
+                        <Link prefetch={false} href={`/me/${participant.id}/check-access?token=${prayerCheckToken(participant.id)}`} className="mt-1 block text-xs text-slate-500 underline">본인용 기도 체크 링크</Link>
                       </td>
                       <td className="py-3 pr-4 text-slate-500">{participant.team}</td>
                       <td className="max-w-md py-3 pr-4 text-slate-600">
