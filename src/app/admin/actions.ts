@@ -33,6 +33,12 @@ async function mutate(formData: FormData, operation: string, payload = {}) {
     if (operation === 'publish') return { message: '새 조 편성을 저장했습니다. 잠시 후 출력 화면에 결과가 공개됩니다.' };
     if (operation === 'restore') return { message: '선택한 편성으로 돌아갔습니다. 잠시 후 출력 화면에 결과가 공개됩니다.' };
     if (operation === 'draw') return { message: '잠시 후 출력 화면에 현재 조가 다시 공개됩니다.' };
+    if (operation === 'archive_reset' || operation === 'archive_delete') {
+      revalidatePath('/admin/history');
+      return { message: operation === 'archive_reset'
+        ? '현재 기록을 숨겼습니다. 관리자 이력 관리에서 확인할 수 있습니다.'
+        : '참가자를 현재 명단에서 숨겼습니다. 관리자 이력 관리에서 확인할 수 있습니다.' };
+    }
     return { message: '처리되었습니다.' };
   } catch (error) {
     return { error: error instanceof Error ? error.message : '처리하지 못했습니다.' };
@@ -66,10 +72,10 @@ export async function restoreRoundAction(formData: FormData) {
   return mutate(formData, 'restore', { roundId });
 }
 export async function unpublishAction(formData: FormData) { return mutate(formData, 'unpublish'); }
-export async function deleteParticipantAction(formData: FormData) { return mutate(formData, 'delete', { id: formData.get('id') }); }
+export async function deleteParticipantAction(formData: FormData) { return mutate(formData, 'archive_delete', { id: formData.get('id') }); }
 export async function resetAllAction(formData: FormData) {
   if (formData.get('confirm') !== '삭제') return { error: '삭제라고 입력해 주세요.' };
-  return mutate(formData, 'reset', { confirm: '삭제' });
+  return mutate(formData, 'archive_reset', { confirm: '삭제' });
 }
 
 export async function applyParticipantsAction(formData: FormData) {

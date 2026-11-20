@@ -20,6 +20,25 @@ export type RoundHistoryEntry = {
   isActive: boolean;
 };
 
+export type ArchiveSummary = {
+  id: string;
+  archivedAt: string;
+  kind: 'reset' | 'delete';
+  participantCount: number;
+};
+
+export type ArchiveEntry = ArchiveSummary & {
+  participants: Participant[];
+  rounds: {
+    id: string;
+    mode: MatchMode;
+    targetSize: TargetSize;
+    createdAt: string;
+    isActive: boolean;
+    assignments: { participantId: string; groupNumber: number }[];
+  }[];
+};
+
 export function readRevision(formData: FormData): number {
   const raw = formData.get('revision');
   if (typeof raw !== 'string' || !/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
@@ -51,6 +70,18 @@ export const getRoundHistory = unstable_cache(
   ['prayer-round-history', ...cacheScope],
   eventCache,
 );
+
+export function getRoundEntry(id: string): Promise<(ActiveRound & { isActive: boolean }) | null> {
+  return storageRequest<ActiveRound & { isActive: boolean } | null>('round_entry', { id });
+}
+
+export function getArchiveHistory(): Promise<ArchiveSummary[]> {
+  return storageRequest<ArchiveSummary[]>('archive_history');
+}
+
+export function getArchiveEntry(id: string): Promise<ArchiveEntry | null> {
+  return storageRequest<ArchiveEntry | null>('archive_entry', { id });
+}
 
 const readStoredRevision = unstable_cache(
   () => storageRequest<{ revision: number }>('revision'),

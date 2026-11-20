@@ -12,6 +12,7 @@ function empty() {
 }
 function harness() {
   let stored = empty(), writes = 0, locks = 0, failWrite = false;
+  const archiveRows = [];
   const properties = new Map([['SHEETS_API_SECRET', secret], ['SPREADSHEET_ID', 'sheet-id']]);
   let clock = Date.now();
   class TestDate extends Date {
@@ -26,13 +27,28 @@ function harness() {
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: text => ({ setMimeType: () => text }) }
   });
   vm.runInContext(fs.readFileSync(__dirname + '/Code.gs', 'utf8'), context);
+  context.SpreadsheetApp.openById = () => ({
+    getSheetByName: name => name === 'prayer_archive' && archiveRows.length ? {
+      getLastRow: () => archiveRows.length + 1,
+      getRange: (row, column, rows, columns) => ({
+        getValues: () => [Array.from(context.PRAYER_ARCHIVE_HEADERS), ...archiveRows]
+          .slice(row - 1, row - 1 + rows).map(values => values.slice(column - 1, column - 1 + columns)),
+      }),
+    } : null,
+  });
   context.readState = () => clone(stored);
   context.readSubmissionState = () => clone(stored);
   context.readTable = (_, name) => clone(stored[name]);
-  context.commitState = (_, before, after) => {
+  context.commitState = (_, before, after, archive) => {
     writes++;
     if (failWrite) throw new Error('upstream response must not leak');
     assert.deepEqual(clone(before), stored);
+    if (archive) {
+      archiveRows.push(...context.prayerArchiveRows(archive).map(row => row.values.map(cell => {
+        const value = cell.userEnteredValue;
+        return value?.stringValue ?? value?.numberValue ?? '';
+      })));
+    }
     stored = clone(after);
   };
   context.commitSubmissionState = context.commitState;
@@ -51,7 +67,7 @@ function harness() {
   }
   function check(id, week, checked, roundId = stored.match_rounds.find(r => r.is_active)?.id) { return call('check_prayer', { id, roundId, week, checked }); }
   return { context, call, ok, submit, command, publish, state: () => clone(stored), writes: () => writes, locks: () => locks, now: () => clock,
-    check, advanceTime: milliseconds => { clock += milliseconds; }, failWrites: () => { failWrite = true; } };
+    check, advanceTime: milliseconds => { clock += milliseconds; }, failWrites: (enabled = true) => { failWrite = enabled; } };
 }
 
 test('authentication rejects requests before accessing storage; GET reveals no records', () => {
@@ -309,7 +325,137 @@ test('history is private metadata, newest first, includes active and excludes un
   assert.equal(h.command('delete', { id }).ok, true);
   assert.equal(h.command('delete', { id: h.state().participants[0].id }).ok, true);
   assert.deepEqual(h.ok('history'), []);
+  assert.equal(h.ok('round_entry', { id: first }), null);
   assert.equal(h.command('restore', { roundId: first }).error.code, 'P0002');
+});
+
+test('saved round details preserve past group and member order without writing or changing the active round', () => {
+  const h = harness();
+  const first = h.submit('첫 참가자');
+  const second = h.submit('둘째 참가자');
+  const third = h.submit('셋째 참가자');
+  const removed = h.submit('숨길 참가자');
+  const assignments = [[second, 7], [removed, 11], [third, 2], [first, 7]]
+    .map(([participant_id, group_number]) => ({ participant_id, group_number }));
+  assert.equal(h.command('publish', { target: 2, mode: 'team', assignments }).ok, true);
+  const previous = h.state().match_rounds[0];
+  assert.equal(h.check(second, 1, true).ok, true);
+  h.advanceTime(1000);
+  assert.equal(h.publish(3, 'random').ok, true);
+  const current = h.state().match_rounds[1];
+  h.submit('아직 배정되지 않은 참가자');
+  assert.equal(h.command('archive_delete', { id: removed }).ok, true);
+  h.ok('migration_set_read_only', { readOnly: true });
+  const writes = h.writes(), before = h.state(), locks = h.locks();
+
+  assert.equal(h.call('round_entry', { id: previous.id }, 'wrong').error.code, '401');
+  assert.equal(h.locks(), locks);
+  assert.equal(h.call('round_entry', { id: 'invalid' }).error.code, '22023');
+  assert.equal(h.ok('round_entry', { id: randomUUID() }), null);
+  const entry = h.ok('round_entry', { id: previous.id });
+  assert.deepEqual(entry, {
+    id: previous.id, mode: 'team', targetSize: 2, createdAt: previous.created_at, isActive: false,
+    groups: [
+      { groupNumber: 2, members: [{ ...before.participants.find(p => p.id === third), prayerChecks: [false, false, false, false] }] },
+      { groupNumber: 7, members: [
+        { ...before.participants.find(p => p.id === second), prayerChecks: [true, false, false, false] },
+        { ...before.participants.find(p => p.id === first), prayerChecks: [false, false, false, false] },
+      ] },
+    ],
+  });
+  assert.equal(h.ok('round_entry', { id: current.id }).isActive, true);
+  const snapshot = h.ok('snapshot');
+  assert.equal(snapshot.round.id, current.id);
+  assert.equal(Object.hasOwn(snapshot.round, 'isActive'), false);
+  assert.equal(h.writes(), writes);
+  assert.deepEqual(h.state(), before);
+});
+
+test('archiving clears live data, keeps prayer details and every assignment, and leaves earlier archives intact', () => {
+  const h = harness(), id = h.submit('보관한 이름');
+  h.submit(); h.submit(); h.submit();
+  assert.deepEqual(h.ok('archive_history'), []);
+  assert.equal(h.ok('archive_entry', { id: randomUUID() }), null);
+  h.publish(2);
+  const first = h.state().match_rounds[0].id;
+  assert.equal(h.check(id, 2, true).ok, true);
+  h.advanceTime(1000);
+  h.publish(3, 'random');
+  const second = h.state().match_rounds[1].id;
+  const pending = h.submit('미배정 참가자');
+  const before = h.state(), writes = h.writes();
+  assert.equal(h.command('archive_reset', { confirm: ' 삭제 ' }).error.code, '22023');
+  assert.equal(h.command('archive_reset', { confirm: '삭제' }, before.match_control[0].revision - 1).error.code, '40001');
+  h.failWrites();
+  assert.equal(h.command('archive_reset', { confirm: '삭제' }).error.code, '503');
+  assert.deepEqual(h.state(), before);
+  assert.deepEqual(h.ok('archive_history'), []);
+  h.failWrites(false);
+  assert.equal(h.command('archive_reset', { confirm: '삭제' }).ok, true);
+  assert.equal(h.writes(), writes + 2, 'rejected commands never attempt writes and the valid command commits once');
+  assert.equal(h.call('archive_history', {}, 'wrong').error.code, '401');
+  const [entry] = h.ok('archive_history');
+  assert.deepEqual(entry, { id: entry.id, archivedAt: new Date(h.now()).toISOString(), kind: 'reset', participantCount: 5 });
+  assert.equal(h.call('archive_entry', { id: entry.id }, 'wrong').error.code, '401');
+  const archive = h.ok('archive_entry', { id: entry.id });
+  assert.deepEqual(archive.participants.find(p => p.id === id), {
+    ...before.participants.find(p => p.id === id), prayerChecks: [false, true, false, false],
+  });
+  assert.equal(archive.participants.find(p => p.id === pending).name, '미배정 참가자');
+  assert.deepEqual(archive.rounds.map(round => ({ id: round.id, isActive: round.isActive })), [
+    { id: second, isActive: true }, { id: first, isActive: false },
+  ]);
+  for (const round of archive.rounds) {
+    assert.equal(round.assignments.length, 4);
+    assert.deepEqual(round.assignments[0], { participantId: id, groupNumber: 1 });
+    assert.ok(round.assignments.every(assignment => assignment.participantId !== pending));
+  }
+  const live = h.ok('snapshot');
+  assert.deepEqual(live.participants, []);
+  assert.equal(live.round, null);
+  assert.equal(live.drawStartedAt, null);
+  assert.equal(h.ok('participant', { id }), null);
+  assert.deepEqual(h.ok('history'), []);
+  assert.equal(h.command('restore', { roundId: first }).error.code, 'P0002');
+  assert.ok(!JSON.stringify(h.ok('export')).includes('보관한 이름'));
+  assert.equal(h.command('archive_reset', { confirm: '삭제' }).ok, true);
+  assert.deepEqual(h.ok('archive_history'), [entry], 'empty resets do not create archive entries');
+  h.advanceTime(1000);
+  const nextId = h.submit('다음 참가자');
+  assert.equal(h.command('reset', { confirm: '삭제' }).ok, true);
+  const [next, previous] = h.ok('archive_history');
+  assert.equal(next.kind, 'reset');
+  assert.equal(next.participantCount, 1);
+  assert.deepEqual(previous, entry);
+  assert.equal(h.ok('archive_entry', { id: next.id }).participants[0].id, nextId);
+  assert.deepEqual(h.ok('archive_entry', { id: entry.id }), archive);
+  h.ok('migration_set_read_only', { readOnly: true });
+  assert.deepEqual(h.ok('archive_history'), [next, entry]);
+  assert.deepEqual(h.ok('archive_entry', { id: entry.id }), archive);
+  assert.equal(h.command('archive_reset', { confirm: '삭제' }).error.code, '55000');
+});
+
+test('hiding one participant saves that person and their own assignments only', () => {
+  const h = harness(), keep = h.submit('계속 보일 참가자');
+  h.publish(2);
+  const id = h.ok('submit', { requestId: randomUUID(), name: '숨길 참가자', team: '단비팀', prayer: '조용한 기도제목' });
+  h.advanceTime(1000);
+  h.publish(2);
+  const currentRoundId = h.state().match_rounds[1].id;
+  assert.equal(h.check(id, 4, true).ok, true);
+  assert.equal(h.command('archive_delete', { id }).ok, true);
+  assert.deepEqual(h.ok('snapshot').participants.map(p => p.id), [keep]);
+  assert.equal(h.ok('participant', { id }), null);
+  const [entry] = h.ok('archive_history');
+  assert.equal(entry.kind, 'delete');
+  assert.equal(entry.participantCount, 1);
+  const archive = h.ok('archive_entry', { id: entry.id });
+  assert.deepEqual(archive.participants.map(p => [p.id, p.name, p.team, p.prayer_request, p.prayerChecks]), [
+    [id, '숨길 참가자', '단비팀', '조용한 기도제목', [false, false, false, true]],
+  ]);
+  assert.deepEqual(archive.rounds.map(round => [round.id, round.assignments]), [[currentRoundId, [{ participantId: id, groupNumber: 1 }]]]);
+  assert.equal(h.command('archive_delete', { id }).ok, true);
+  assert.deepEqual(h.ok('archive_history'), [entry]);
 });
 
 test('restore reactivates the chosen saved round and schedules a draw without touching memberships', () => {
@@ -571,4 +717,56 @@ test('batch update stores text literally, clears removed rows, and includes cont
   assert.equal(body.requests[1].updateCells.rows[0].values[1].userEnteredValue.numberValue, 1);
   c.UrlFetchApp.fetch = () => ({ getResponseCode: () => 403 });
   assert.throws(() => c.commitState(spreadsheet, before, after), error => error.code === '503');
+});
+
+test('archive initializes an existing sheet setup and appends bounded Unicode chunks atomically with live clearing', () => {
+  const h = harness(), c = h.context;
+  const before = empty();
+  for (let i = 0; i < 120; i++) {
+    before.participants.push({ id: randomUUID(), name: '보관 대상', team: '팀', prayer_request: `=수식처럼 시작 ${'기도🙏'.repeat(120)}`,
+      created_at: new Date().toISOString(), edit_version: 0 });
+  }
+  const after = clone(before);
+  const result = c.applyOperation(after, 'command', { operation: 'archive_reset', revision: 0, payload: { confirm: '삭제' } });
+  const sheets = new Map(Object.keys(before).map((name, i) => [name, {
+    getSheetId: () => i, getLastRow: () => before[name].length + 1, getMaxRows: () => 1000,
+  }]));
+  const archiveId = sheets.size;
+  let hidden = false, flushed = false, headers, sent;
+  const spreadsheet = {
+    getId: () => 'private-sheet', getSheetByName: name => sheets.get(name),
+    insertSheet: name => {
+      assert.equal(name, 'prayer_archive');
+      const sheet = { getSheetId: () => archiveId, getLastRow: () => headers ? 1 : 0, getName: () => name,
+        setFrozenRows: count => assert.equal(count, 1), hideSheet: () => { hidden = true; },
+        getRange: () => ({ setValues: rows => { headers = clone(rows); }, getValues: () => headers }),
+      };
+      sheets.set(name, sheet);
+      return sheet;
+    },
+  };
+  c.SpreadsheetApp.flush = () => { flushed = true; };
+  c.ScriptApp = { getOAuthToken: () => 'test-token' };
+  c.UrlFetchApp = { fetch: (_, options) => {
+    assert.equal(sent, undefined, 'live changes and archive use one batch');
+    assert.equal(flushed, true);
+    sent = JSON.parse(options.payload).requests;
+    return { getResponseCode: () => 200 };
+  } };
+  const source = fs.readFileSync(__dirname + '/Code.gs', 'utf8');
+  vm.runInContext(source.slice(source.indexOf('function commitState('), source.indexOf('\nfunction validatePerson(')), c);
+  c.commitState(spreadsheet, before, after, result.archive);
+  assert.equal(hidden, true);
+  assert.deepEqual(headers, [Array.from(c.PRAYER_ARCHIVE_HEADERS)]);
+  assert.equal(sent.length, 3);
+  assert.deepEqual(sent[0].updateCells.rows, [], 'live participant rows are cleared');
+  assert.equal(sent[1].updateCells.rows[0].values[1].userEnteredValue.numberValue, 1, 'live revision increments');
+  const append = sent[2].appendCells;
+  assert.equal(append.sheetId, archiveId);
+  assert.equal(append.fields, 'userEnteredValue');
+  const chunks = append.rows.map(row => row.values[5].userEnteredValue.stringValue);
+  assert.ok(chunks.length > 2);
+  assert.equal(append.rows[0].values[4].userEnteredValue.numberValue, chunks.length);
+  assert.ok(chunks.every(chunk => chunk.length <= c.PRAYER_ARCHIVE_CHUNK_SIZE && !/[\uD800-\uDBFF]$/.test(chunk)));
+  assert.deepEqual(JSON.parse(chunks.join('')), clone({ participants: result.archive.participants, rounds: [] }));
 });

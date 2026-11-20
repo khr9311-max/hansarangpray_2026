@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import ActionForm from '@/components/ActionForm';
 import { getEventSnapshot, getRoundHistory } from '@/lib/event';
+import { hasLegacyRoundSource } from '@/lib/legacy-round-history';
 import { editToken } from '@/lib/participant-access';
 import { prayerCheckToken } from '@/lib/prayer-access';
 import { PRAYER_WEEKS } from '@/lib/prayer-weeks';
@@ -58,6 +59,13 @@ export default async function AdminPage() {
             <h1 className="text-2xl font-bold text-slate-900">2026 짝기도 매칭 관리</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-sm">
+            <Link
+              href="/admin/history"
+              prefetch={false}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-medium text-slate-700"
+            >
+              이력 관리
+            </Link>
             <Link
               href="/display"
               className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-medium text-slate-700"
@@ -167,11 +175,18 @@ export default async function AdminPage() {
             <h2 className="text-sm font-semibold text-slate-500">조 편성 기록</h2>
             <p className="text-xs text-slate-400">최근 순 · 한국 시간</p>
           </div>
-          <p className="mt-2 text-sm text-slate-600">이전 조를 선택하면 저장된 조 편성으로 돌아가 결과 화면에 다시 공개합니다. 이후 접수되어 그 조에 없는 참여자는 추가 반영 대기로 남습니다.</p>
+          <p className="mt-2 text-sm text-slate-600">회차별로 이름, 팀, 조, 기도제목을 확인할 수 있습니다. ‘이 조로 돌아가기’를 누르면 해당 편성을 결과 화면에 다시 공개합니다.</p>
           {history === null ? (
             <p role="alert" className="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">조 편성 기록을 불러오지 못했습니다. 화면을 새로고침해 다시 확인해 주세요.</p>
           ) : history.length === 0 ? (
-            <p className="mt-4 text-sm text-slate-400">아직 저장된 조 편성 기록이 없습니다.</p>
+            <p className="mt-4 text-sm text-slate-500">
+              현재 저장소에 저장된 조 편성이 없습니다.
+              {hasLegacyRoundSource() && (
+                <Link href="/admin/history?view=legacy" prefetch={false} className="ml-2 font-medium text-brand-700 underline">
+                  이전 시트 기록 보기
+                </Link>
+              )}
+            </p>
           ) : (
             <ol className="mt-4 divide-y divide-slate-100">
               {history.map((entry) => (
@@ -183,15 +198,22 @@ export default async function AdminPage() {
                     </div>
                     <p className="mt-1 text-sm text-slate-500">{MATCH_MODE_LABEL[entry.mode]} · {entry.targetSize}인 기준 · {entry.groupCount}조 · {entry.memberCount}명</p>
                   </div>
-                  {entry.isActive ? (
-                    <span className="text-xs text-slate-400">현재 사용 중</span>
-                  ) : (
-                    <ActionForm action={restoreRoundAction} className="w-full sm:w-auto">
-                      <input type="hidden" name="revision" value={revision} />
-                      <input type="hidden" name="round_id" value={entry.id} />
-                      <button type="submit" className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 sm:w-auto">이 조로 돌아가기</button>
-                    </ActionForm>
-                  )}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Link
+                      href={{ pathname: '/admin/history', query: { view: 'rounds', round: entry.id } }}
+                      prefetch={false}
+                      className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700"
+                    >
+                      이 회차 보기
+                    </Link>
+                    {!entry.isActive && (
+                      <ActionForm action={restoreRoundAction}>
+                        <input type="hidden" name="revision" value={revision} />
+                        <input type="hidden" name="round_id" value={entry.id} />
+                        <button type="submit" className="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700">이 조로 돌아가기</button>
+                      </ActionForm>
+                    )}
+                  </div>
                 </li>
               ))}
             </ol>
@@ -289,9 +311,10 @@ export default async function AdminPage() {
                           <input type="hidden" name="id" value={participant.id} />
                           <button
                             type="submit"
-                            className="text-xs text-slate-400 hover:text-red-600"
+                            aria-label={`${participant.name} 참가 기록 숨기기`}
+                            className="whitespace-nowrap text-xs text-slate-500 hover:text-brand-700"
                           >
-                            삭제
+                            숨기기
                           </button>
                         </ActionForm>
                       </td>
@@ -303,24 +326,26 @@ export default async function AdminPage() {
           )}
         </section>
 
-        {/* 행사 종료 후 데이터 삭제 */}
-        <section className="rounded-2xl border border-red-200 bg-red-50 p-6">
-          <h2 className="text-sm font-semibold text-red-700">행사 종료 후 데이터 삭제</h2>
-          <p className="mt-1 text-xs text-red-600/80">
-            참가자와 매칭 기록을 모두 지웁니다. 되돌릴 수 없으니 CSV 를 먼저 내려받으세요.
+        <section className="rounded-2xl border border-slate-200 bg-white p-6">
+          <h2 className="text-sm font-semibold text-slate-900">행사 종료 후 기록 정리</h2>
+          <p className="mt-2 text-sm leading-relaxed text-slate-600">
+            현재 명단과 조 편성을 비우면 결과 화면과 기존 개인 링크에서 기록이 사라집니다.
+            이름, 팀, 조, 기도제목은 관리자 이력에 보관됩니다.
           </p>
-          <ActionForm action={resetAllAction} className="mt-4 flex flex-wrap gap-2"><input type="hidden" name="revision" value={revision} />
+          <ActionForm action={resetAllAction} className="mt-4 flex flex-wrap gap-2">
+            <input type="hidden" name="revision" value={revision} />
             <input
               name="confirm"
               required
-              placeholder="삭제 라고 입력"
-              className="rounded-lg border border-red-300 bg-white px-3 py-2 text-sm outline-none focus:border-red-500"
+              aria-label="확인 문구 삭제 입력"
+              placeholder="‘삭제’ 입력"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500"
             />
             <button
               type="submit"
-              className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white"
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-brand-500 hover:text-brand-700"
             >
-              전체 삭제
+              현재 기록 숨기기
             </button>
           </ActionForm>
         </section>

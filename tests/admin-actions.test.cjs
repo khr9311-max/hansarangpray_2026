@@ -183,7 +183,7 @@ test('restoring a dated round sends only its id and revision, without regenerati
   assert.equal(h.reads.length, 0);
 });
 
-test('full deletion requires its own exact confirmation and does not masquerade as rematching', async () => {
+test('archiving the active event requires its exact confirmation and uses the archive command', async () => {
   const h = harness();
   for (const confirm of ['', '재편성', ' 삭제 ', '초기화']) {
     assert.equal(typeof (await h.actions.resetAllAction(form({ revision: 17, confirm }))).error, 'string');
@@ -191,7 +191,17 @@ test('full deletion requires its own exact confirmation and does not masquerade 
   assert.equal(h.writes.length, 0);
   const result = await h.actions.resetAllAction(form({ revision: 17, confirm: '삭제' }));
   assert.equal(result.error, undefined);
-  assert.deepEqual(h.writes, [{ revision: 17, operation: 'reset', payload: { confirm: '삭제' } }]);
+  assert.match(result.message, /관리자 이력 관리/);
+  assert.deepEqual(h.writes, [{ revision: 17, operation: 'archive_reset', payload: { confirm: '삭제' } }]);
+  assert.ok(h.invalidations.some(([path]) => path === '/admin/history'));
+});
+
+test('hiding one participant uses the archive command and refreshes history', async () => {
+  const h = harness();
+  const result = await h.actions.deleteParticipantAction(form({ revision: 17, id: 'id-0' }));
+  assert.match(result.message, /관리자 이력 관리/);
+  assert.deepEqual(h.writes, [{ revision: 17, operation: 'archive_delete', payload: { id: 'id-0' } }]);
+  assert.ok(h.invalidations.some(([path]) => path === '/admin/history'));
 });
 
 test('revision parsing rejects omitted, blank, malformed and unsafe versions while accepting zero', () => {

@@ -14,6 +14,9 @@ var TABLES = {
   prayer_checkins: ['participant_id', 'week_1', 'week_2', 'week_3', 'week_4']
 };
 var UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+var PRAYER_ARCHIVE_SHEET = 'prayer_archive';
+var PRAYER_ARCHIVE_HEADERS = ['id', 'archived_at', 'kind', 'participant_count', 'chunk_count', 'data'];
+var PRAYER_ARCHIVE_CHUNK_SIZE = 20000;
 
 /** Run once from the editor while the intended spreadsheet is open. */
 function setup() {
@@ -44,6 +47,7 @@ function setup() {
       if (name === 'match_control' && sheet.getLastRow() === 1) sheet.getRange(2, 1, 1, 3).setValues([[true, 0, '']]);
       if (name === 'match_control' || name === 'participant_submissions') sheet.hideSheet();
     });
+    initializePrayerArchive(spreadsheet);
     SpreadsheetApp.flush();
     readState(spreadsheet); // Validate existing data; setup never overwrites it.
   } finally { lock.releaseLock(); }
@@ -97,6 +101,14 @@ function initializePrayerCheckins(spreadsheet) {
 function isBlankPrayerPlaceholder(row) {
   return (row[0] === '' || row[0] === null) && row.slice(1).every(function (value) { return value === '' || value === null || value === false; });
 }
+function initializePrayerArchive(spreadsheet) {
+  var sheet = spreadsheet.getSheetByName(PRAYER_ARCHIVE_SHEET) || spreadsheet.insertSheet(PRAYER_ARCHIVE_SHEET);
+  if (sheet.getLastRow() === 0) sheet.getRange(1, 1, 1, PRAYER_ARCHIVE_HEADERS.length).setValues([PRAYER_ARCHIVE_HEADERS]);
+  verifyHeaders(sheet, PRAYER_ARCHIVE_HEADERS);
+  sheet.setFrozenRows(1);
+  sheet.hideSheet();
+  return sheet;
+}
 
 function doGet() {
   return jsonOutput({ ok: true, service: 'jjak-gido-google-sheets', version: 1 });
@@ -127,7 +139,7 @@ function doPost(event) {
       return jsonOutput({ ok: true, data: { readOnly: request.payload.readOnly } });
     }
     if (properties.getProperty('MIGRATION_READ_ONLY') === 'true'
-        && ['export', 'snapshot', 'revision', 'participant', 'history'].indexOf(request.operation) === -1) {
+        && ['export', 'snapshot', 'revision', 'participant', 'history', 'round_entry', 'archive_history', 'archive_entry'].indexOf(request.operation) === -1) {
       fail('55000', '저장소 전환 중입니다. 잠시 후 다시 시도해 주세요.');
     }
     if (request.operation === 'submit' || request.operation === 'submit_batch') {
@@ -156,12 +168,20 @@ function doPost(event) {
       var participant = readTable(spreadsheet, 'participants').filter(function (p) { return p.id === participantId; })[0] || null;
       return jsonOutput({ ok: true, data: participant ? withPrayerChecks(participant, readTable(spreadsheet, 'prayer_checkins')) : null });
     }
+    if (request.operation === 'archive_history' || request.operation === 'archive_entry') {
+      var archiveId;
+      if (request.operation === 'archive_entry') {
+        archiveId = request.payload && request.payload.id;
+        assertUuid(archiveId);
+      }
+      return jsonOutput({ ok: true, data: readPrayerArchive(spreadsheet, archiveId) });
+    }
     var state = readState(spreadsheet);
     var before = JSON.parse(JSON.stringify(state));
     var result = applyOperation(state, request.operation, request.payload || {});
     if (result.changed) {
       validateState(state);
-      commitState(spreadsheet, before, state);
+      commitState(spreadsheet, before, state, result.archive);
     }
     return jsonOutput({ ok: true, data: result.data });
   } catch (error) {
@@ -318,7 +338,7 @@ function commitSubmissionState(spreadsheetId, before, after) {
   });
   if (response.getResponseCode() < 200 || response.getResponseCode() >= 300) fail('503', '구글시트에 신청을 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.');
 }
-function commitState(spreadsheet, before, after) {
+function commitState(spreadsheet, before, after, archive) {
   var requests = [];
   Object.keys(TABLES).forEach(function (name) {
     var previousRows = before[name] || [], nextRows = after[name] || [];
@@ -337,6 +357,16 @@ function commitState(spreadsheet, before, after) {
       fields: name === 'prayer_checkins' ? 'userEnteredValue,dataValidation' : 'userEnteredValue'
     } });
   });
+  if (archive) {
+    var archiveSheet = spreadsheet.getSheetByName(PRAYER_ARCHIVE_SHEET);
+    if (archiveSheet && archiveSheet.getLastRow() > 0) {
+      verifyHeaders(archiveSheet, PRAYER_ARCHIVE_HEADERS);
+    } else {
+      archiveSheet = initializePrayerArchive(spreadsheet);
+      SpreadsheetApp.flush();
+    }
+    requests.push({ appendCells: { sheetId: archiveSheet.getSheetId(), rows: prayerArchiveRows(archive), fields: 'userEnteredValue' } });
+  }
   if (!requests.length) return;
   var response = UrlFetchApp.fetch('https://sheets.googleapis.com/v4/spreadsheets/' + encodeURIComponent(spreadsheet.getId()) + ':batchUpdate', {
     method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
@@ -411,23 +441,45 @@ function withPrayerChecks(person, checkins) {
   var checkin = (checkins || []).filter(function (row) { return row.participant_id === person.id; })[0];
   return Object.assign({}, person, { prayerChecks: [1, 2, 3, 4].map(function (week) { return !!checkin && checkin['week_' + week] === true; }) });
 }
+function indexParticipantsWithChecks(state) {
+  var people = {};
+  state.participants.forEach(function (p) { people[p.id] = withPrayerChecks(p, state.prayer_checkins); });
+  return people;
+}
+function describeRound(state, round, people) {
+  var membersByGroup = {};
+  state.match_members.forEach(function (member) {
+    if (!membersByGroup[member.group_id]) membersByGroup[member.group_id] = [];
+    membersByGroup[member.group_id].push(member);
+  });
+  return {
+    id: round.id, mode: round.mode, targetSize: round.target_size, createdAt: round.created_at,
+    groups: state.match_groups.filter(function (group) { return group.round_id === round.id; })
+      .sort(function (a, b) { return a.group_number - b.group_number; }).map(function (group) {
+        var members = (membersByGroup[group.id] || []).sort(function (a, b) { return a.seq - b.seq; });
+        return { groupNumber: group.group_number, members: members.map(function (member) { return people[member.participant_id]; }) };
+      })
+  };
+}
 function snapshot(state) {
   var round = state.match_rounds.filter(function (r) { return r.is_active; })[0];
-  var people = {}, control = state.match_control[0];
-  state.participants.forEach(function (p) { people[p.id] = withPrayerChecks(p, state.prayer_checkins); });
+  var people = indexParticipantsWithChecks(state), control = state.match_control[0];
   return {
     revision: control.revision, drawStartedAt: control.draw_started_at, serverTime: nowIso(),
     participants: state.participants.slice().sort(function (a, b) { return b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id); }).map(function (p) { return people[p.id]; }),
-    round: round ? {
-      id: round.id, mode: round.mode, targetSize: round.target_size, createdAt: round.created_at,
-      groups: state.match_groups.filter(function (g) { return g.round_id === round.id; }).sort(function (a, b) { return a.group_number - b.group_number; }).map(function (g) {
-        return { groupNumber: g.group_number, members: state.match_members.filter(function (m) { return m.group_id === g.id; }).sort(function (a, b) { return a.seq - b.seq; }).map(function (m) { return people[m.participant_id]; }) };
-      })
-    } : null
+    round: round ? describeRound(state, round, people) : null
   };
 }
 
-/** Private administrative metadata only; never add history to public snapshots. */
+/** Private administrative reads; never add history to public snapshots. */
+function roundEntry(state, id) {
+  assertUuid(id);
+  var round = state.match_rounds.find(function (item) { return item.id === id; });
+  if (!round) return null;
+  var entry = describeRound(state, round, indexParticipantsWithChecks(state));
+  entry.groups = entry.groups.filter(function (group) { return group.members.length > 0; });
+  return entry.groups.length ? Object.assign(entry, { isActive: round.is_active }) : null;
+}
 function roundHistory(state) {
   var groupCounts = {}, memberCounts = {}, groupById = {}, nonemptyGroups = {};
   state.match_groups.forEach(function (g) { groupById[g.id] = g; });
@@ -446,6 +498,76 @@ function roundHistory(state) {
         groupCount: groupCounts[r.id], memberCount: memberCounts[r.id], isActive: r.is_active };
     });
 }
+function archiveEventRecords(state, kind, participants) {
+  if (!participants.length) return null;
+  var participantIds = {}, groups = {}, assignments = {};
+  participants.forEach(function (p) { participantIds[p.id] = true; });
+  state.match_groups.forEach(function (group) { groups[group.id] = group; });
+  state.match_members.filter(function (member) { return participantIds[member.participant_id]; })
+    .sort(function (a, b) { return groups[a.group_id].group_number - groups[b.group_id].group_number || a.seq - b.seq || a.participant_id.localeCompare(b.participant_id); })
+    .forEach(function (member) {
+      var group = groups[member.group_id];
+      if (!assignments[group.round_id]) assignments[group.round_id] = [];
+      assignments[group.round_id].push({ participantId: member.participant_id, groupNumber: group.group_number });
+    });
+  return {
+    id: Utilities.getUuid(), archivedAt: nowIso(), kind: kind, participantCount: participants.length,
+    participants: participants.slice().sort(function (a, b) { return Date.parse(b.created_at) - Date.parse(a.created_at) || a.id.localeCompare(b.id); })
+      .map(function (p) { return withPrayerChecks(p, state.prayer_checkins); }),
+    rounds: state.match_rounds.filter(function (round) { return kind === 'reset' || assignments[round.id]; })
+      .sort(function (a, b) { return Date.parse(b.created_at) - Date.parse(a.created_at) || a.id.localeCompare(b.id); })
+      .map(function (round) {
+        return { id: round.id, mode: round.mode, targetSize: round.target_size, createdAt: round.created_at,
+          isActive: round.is_active, assignments: assignments[round.id] || [] };
+      })
+  };
+}
+/** Split large histories across cells, keeping Unicode surrogate pairs together. */
+function prayerArchiveRows(archive) {
+  var detail = JSON.stringify({ participants: archive.participants, rounds: archive.rounds });
+  var chunks = [], start = 0;
+  while (start < detail.length) {
+    var end = Math.min(start + PRAYER_ARCHIVE_CHUNK_SIZE, detail.length);
+    if (/[\uD800-\uDBFF]/.test(detail.charAt(end - 1))) end--;
+    chunks.push(detail.slice(start, end));
+    start = end;
+  }
+  return chunks.map(function (chunk, index) {
+    var row = index === 0 ? [archive.id, archive.archivedAt, archive.kind, archive.participantCount, chunks.length, chunk] : ['', '', '', '', '', chunk];
+    return { values: row.map(asCell) };
+  });
+}
+function readPrayerArchive(spreadsheet, id) {
+  var sheet = spreadsheet.getSheetByName(PRAYER_ARCHIVE_SHEET);
+  if (!sheet || sheet.getLastRow() === 0) return id ? null : [];
+  verifyHeaders(sheet, PRAYER_ARCHIVE_HEADERS);
+  var rowCount = sheet.getLastRow() - 1;
+  if (!rowCount) return id ? null : [];
+
+  // Read the summaries first, then load the prayer details only for the selected entry.
+  var rows = sheet.getRange(2, 1, rowCount, PRAYER_ARCHIVE_HEADERS.length - 1).getValues();
+  var summaries = [];
+  for (var index = rows.length - 1; index >= 0; index--) {
+    var row = rows[index];
+    if (!row[0] || (id && row[0] !== id)) continue;
+    var summary = { id: row[0], archivedAt: row[1] instanceof Date ? row[1].toISOString() : row[1], kind: row[2], participantCount: row[3] };
+    if (!id) {
+      summaries.push(summary);
+      continue;
+    }
+    var chunkCount = row[4];
+    if (!isInteger(chunkCount, 1) || index + chunkCount > rows.length) fail('CONFIG', '보관한 기록을 읽지 못했습니다.');
+    var chunks = sheet.getRange(index + 2, PRAYER_ARCHIVE_HEADERS.length, chunkCount, 1).getValues();
+    var detail;
+    try { detail = JSON.parse(chunks.map(function (chunk) { return chunk[0]; }).join('')); }
+    catch (_) { fail('CONFIG', '보관한 기록을 읽지 못했습니다.'); }
+    if (!detail || !Array.isArray(detail.participants) || detail.participants.length !== summary.participantCount || !Array.isArray(detail.rounds)) {
+      fail('CONFIG', '보관한 기록을 읽지 못했습니다.');
+    }
+    return Object.assign(summary, { participants: detail.participants, rounds: detail.rounds });
+  }
+  return id ? null : summaries.sort(function (a, b) { return Date.parse(b.archivedAt) - Date.parse(a.archivedAt) || a.id.localeCompare(b.id); });
+}
 function scheduleDraw(control) {
   var drawNow = Date.now();
   if (control.draw_started_at && Date.parse(control.draw_started_at) + 3200 > drawNow) fail('40001', '이미 추첨을 준비하거나 진행하고 있습니다.');
@@ -457,9 +579,10 @@ function assertDrawIdle(control) {
 
 function applyOperation(state, operation, payload) {
   if (state.prayer_checkins === undefined) state.prayer_checkins = [];
-  var control = state.match_control[0], person, active, data;
+  var control = state.match_control[0], person, active, data, archive;
   if (operation === 'snapshot') return { data: snapshot(state), changed: false };
   if (operation === 'history') return { data: roundHistory(state), changed: false };
+  if (operation === 'round_entry') return { data: roundEntry(state, payload.id), changed: false };
   if (operation === 'export') return { data: state, changed: false };
   if (operation === 'import') {
     var incoming = payload.data;
@@ -556,17 +679,19 @@ function applyOperation(state, operation, payload) {
     // Reveal saved groups only; never append participants implicitly.
   } else if (action === 'unpublish') {
     state.match_rounds.forEach(function (r) { r.is_active = false; }); control.draw_started_at = null;
-  } else if (action === 'delete') {
+  } else if (action === 'delete' || action === 'archive_delete') {
     assertUuid(body.id);
+    archive = archiveEventRecords(state, 'delete', state.participants.filter(function (p) { return p.id === body.id; }));
     state.participants = state.participants.filter(function (p) { return p.id !== body.id; });
     state.match_members = state.match_members.filter(function (m) { return m.participant_id !== body.id; });
     state.participant_submissions = state.participant_submissions.filter(function (s) { return s.participant_id !== body.id; });
     state.prayer_checkins = state.prayer_checkins.filter(function (row) { return row.participant_id !== body.id; });
-  } else if (action === 'reset' && body.confirm === '삭제') {
+  } else if ((action === 'reset' || action === 'archive_reset') && body.confirm === '삭제') {
+    archive = archiveEventRecords(state, 'reset', state.participants);
     Object.keys(TABLES).forEach(function (name) { if (name !== 'match_control') state[name] = []; }); control.draw_started_at = null;
   } else fail('22023', '지원하지 않는 작업이거나 확인 문구가 없습니다.');
   control.revision++;
-  return { data: null, changed: true };
+  return { data: null, changed: true, archive: archive };
 }
 function tableCounts(state) {
   var counts = {}; Object.keys(TABLES).forEach(function (name) { counts[name] = (state[name] || []).length; }); return counts;
