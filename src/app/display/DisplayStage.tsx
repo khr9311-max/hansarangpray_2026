@@ -1,14 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
 import QrCode from '@/components/QrCode';
 import type { QrMatrix } from '@/lib/qr';
 import type { DisplayMember, DisplayRound } from '@/lib/display';
 import { DRAW_MS, getDisplayPhase, type DisplayPhase } from '@/lib/display';
-import ActionForm from '@/components/ActionForm';
-import { applyParticipantsAction } from '@/app/admin/actions';
-import { prepareDrawAction } from './actions';
 
 // 화면에 실제로 쓰는 필드만 받습니다. 서버 컴포넌트가 이보다 많은 필드를
 // 넘기면 그 값 그대로 페이지 소스(RSC 페이로드)에 실리므로, 여기서
@@ -90,7 +86,7 @@ function gridClass(groupCount: number) {
 }
 
 type StageProps = {
-  revision: number; drawStartedAt: string | null; serverTime: string; admin: boolean;
+  revision: number; drawStartedAt: string | null; serverTime: string;
   participants: DisplayMember[];
   round: DisplayRound | null;
   pendingCount: number;
@@ -104,16 +100,10 @@ export default function DisplayStage(props: StageProps) {
   return <Stage key={`${current.round?.id}:${current.drawStartedAt}`} {...current} />;
 }
 
-function Stage({ participants, round: serverRound, pendingCount, qr, revision, drawStartedAt, serverTime, admin }: StageProps) {
-  const router = useRouter();
-  const round = serverRound;
-  const [preparing, setPreparing] = useState(false);
-  const preparingRef = useRef(false);
-  const [drawError, setDrawError] = useState<{ message: string; requiresAdmin?: boolean } | null>(null);
-  const remainingCount = pendingCount;
+function Stage({ participants, round, pendingCount, qr, drawStartedAt, serverTime }: StageProps) {
   const [phase, setPhase] = useState<DisplayPhase>(() => getDisplayPhase(!!round, drawStartedAt, serverTime));
   const [chips, setChips] = useState<Chip[]>([]);
-  const drawTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const roundId = round?.id;
 
   const visible = useMemo(() => participants.slice(0, MAX_CHIPS), [participants]);
   const hiddenCount = participants.length - visible.length;
@@ -128,25 +118,15 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
 
   // Shared database timestamp: a phone command starts the same reveal on every display.
   useEffect(() => {
-    if (drawTimer.current) clearTimeout(drawTimer.current);
-    if (!serverRound) { setPhase('idle'); return; }
-    if (!drawStartedAt) { setPhase('ready'); return; }
+    setPhase(getDisplayPhase(Boolean(roundId), drawStartedAt, serverTime));
+    if (!roundId || !drawStartedAt) return;
     const untilStart = Date.parse(drawStartedAt) - Date.parse(serverTime);
     const remaining = DRAW_MS + untilStart;
-    if (remaining <= 0) setPhase('revealed');
-    else if (untilStart > 0) {
-      setPhase('scheduled');
-      drawTimer.current = setTimeout(() => {
-        setPhase('drawing');
-        drawTimer.current = setTimeout(() => setPhase('revealed'), DRAW_MS);
-      }, untilStart);
-    }
-    else {
-      setPhase('drawing');
-      drawTimer.current = setTimeout(() => setPhase('revealed'), remaining);
-    }
-    return () => { if (drawTimer.current) clearTimeout(drawTimer.current); };
-  }, [serverRound?.id, drawStartedAt, serverTime]);
+    if (remaining <= 0) return;
+    const startTimer = untilStart > 0 ? setTimeout(() => setPhase('drawing'), untilStart) : undefined;
+    const revealTimer = setTimeout(() => setPhase('revealed'), remaining);
+    return () => { clearTimeout(startTimer); clearTimeout(revealTimer); };
+  }, [roundId, drawStartedAt, serverTime]);
 
   // 이름표 자리 바꾸기. 추첨 중에는 빠르게, 대기 중에는 느긋하게.
   useEffect(() => {
@@ -158,50 +138,10 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
     return () => clearInterval(timer);
   }, [phase]);
 
-  const startDraw = useCallback(async () => {
-    if (!admin || !round || phase === 'drawing' || phase === 'scheduled' || preparingRef.current) return;
-    preparingRef.current = true;
-    setPreparing(true); setDrawError(null);
-    try {
-      const result = await prepareDrawAction(revision);
-      if (result.status === 'error') setDrawError(result);
-      router.refresh();
-    } catch { setDrawError({ message: '서버에 연결하지 못했습니다. 결과를 확인하고 다시 시도해 주세요.' }); }
-    finally { preparingRef.current = false; setPreparing(false); }
-  }, [admin, phase, round, revision, router]);
-
-  // 스페이스바로도 추첨을 돌릴 수 있게 합니다. 현장에서 마우스보다 편합니다.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!admin) return;
-      if (event.code !== 'Space' && event.code !== 'Enter') return;
-      if (event.repeat || (event.target instanceof HTMLElement && event.target.closest('a, button, input, select, textarea'))) return;
-      if (phase !== 'ready' && phase !== 'revealed') return;
-      event.preventDefault();
-      startDraw();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [admin, phase, startDraw]);
-
-  const drawNotice = (
-    <>
-      {remainingCount > 0 && (
-        <div className="mb-4 rounded-xl border border-amber-300/30 bg-amber-300/10 px-5 py-3 text-center text-amber-100">
-          <p role="status">추가 신청 {remainingCount}명 · 기존 조를 유지한 채 추가 참여자 반영을 기다리고 있습니다.</p>
-          {admin && <ActionForm action={applyParticipantsAction} className="mx-auto mt-3 max-w-md rounded-lg bg-white p-3 text-slate-800">
-            <input type="hidden" name="revision" value={revision} />
-            <button className="w-full rounded-lg bg-brand-600 px-4 py-2 font-bold text-white">추가 참여자 반영</button>
-          </ActionForm>}
-        </div>
-      )}
-      {drawError && (
-        <div role="alert" className="mb-4 rounded-xl bg-red-950 px-5 py-3 text-center text-red-100">
-          <p>{drawError.message}</p>
-          {drawError.requiresAdmin && <a href="/admin" target="_blank" rel="noopener noreferrer" className="mt-2 inline-block underline">관리자 로그인 열기 ↗</a>}
-        </div>
-      )}
-    </>
+  const drawNotice = pendingCount > 0 && (
+    <div className="mb-4 rounded-xl border border-amber-300/30 bg-amber-300/10 px-5 py-3 text-center text-amber-100">
+      <p role="status">추가 신청 {pendingCount}명이 조 배정을 기다리고 있습니다.</p>
+    </div>
   );
 
   if (phase === 'revealed' && round) {
@@ -234,15 +174,6 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
             </div>
           ))}
         </div>
-
-        {admin && <button
-          type="button"
-          onClick={startDraw}
-          disabled={preparing}
-          className="fixed bottom-6 right-3 z-50 max-w-[55%] sm:max-w-none rounded-full border border-white/15 bg-slate-900 px-5 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:opacity-50"
-        >
-          {preparing ? '결과 공개 요청 중…' : '모든 화면에서 추첨 다시 보기'}
-        </button>}
 
         <div className="fixed bottom-6 left-6 z-40">
           <SignupQr matrix={qr} compact />
@@ -327,7 +258,7 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
         </aside>
       </div>
 
-      {/* 통 아래 안내 · 추첨 버튼 */}
+      {/* 추첨은 관리자 화면에서 시작하며 출력 화면은 상태만 표시합니다. */}
       <div className="mt-6 flex min-h-[4.5rem] items-center justify-center">
         {phase === 'drawing' ? (
           <p className="text-2xl font-semibold tracking-wide text-white/70">
@@ -335,20 +266,10 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
           </p>
         ) : phase === 'scheduled' ? (
           <p role="status" className="text-2xl font-semibold tracking-wide text-white/70">잠시 후 모든 화면에서 추첨을 시작합니다…</p>
-        ) : phase === 'ready' && admin ? (
-          <button
-            type="button"
-            onClick={startDraw}
-            disabled={preparing}
-            className="rounded-2xl bg-brand-600 px-12 py-5 text-3xl font-bold text-white shadow-xl transition hover:bg-brand-500 active:scale-[0.98] disabled:opacity-50"
-          >
-            {preparing ? '결과 공개 요청 중…' : '추첨 시작'}
-            <span className="ml-3 text-lg font-normal text-white/60">Space</span>
-          </button>
         ) : (
           <p className="text-xl text-white/30">
             {participants.length > 0
-              ? `${participants.length}명 신청 · 관리자가 매칭을 확정하면 추첨이 열립니다`
+              ? `${participants.length}명 신청 · 관리자 화면에서 추첨을 시작하면 자동으로 공개됩니다`
               : 'QR 코드로 신청을 받는 중입니다'}
           </p>
         )}

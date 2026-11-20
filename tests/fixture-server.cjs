@@ -1,111 +1,49 @@
-// Isolated UI fixture. Never connects to the production spreadsheet.
+// Isolated UI fixture. Runs the real Apps Script rules without Google services.
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+const { join } = require('node:path');
+const vm = require('node:vm');
 const FIXTURE_SECRET = 'fixture-secret-for-local-testing-2026';
 
 function createFixtureServer() {
-  const submissions = new Map();
-  const people = Array.from({ length: 4 }, (_, i) => ({
+  const backend = { Utilities: { getUuid: randomUUID }, console: { log() {} } };
+  vm.runInNewContext(readFileSync(join(__dirname, '../google-apps-script/Code.gs'), 'utf8'), backend);
+  const createdAt = new Date().toISOString(), roundId = randomUUID();
+  const participants = Array.from({ length: 4 }, (_, i) => ({
     id: randomUUID(), name: `검증${i + 1}`, team: '전도팀', prayer_request: '검증용 기도',
-    created_at: new Date().toISOString(), edit_version: 0,
+    created_at: createdAt, edit_version: 0,
   }));
-  let revision = 0, drawStartedAt = new Date(Date.now() - 10000).toISOString();
-  let round = {
-    id: randomUUID(), mode: 'team', targetSize: 2, createdAt: new Date().toISOString(),
-    groups: [{ groupNumber: 1, members: people.slice(0, 2) }, { groupNumber: 2, members: people.slice(2) }],
+  const groups = [1, 2].map(groupNumber => ({ id: randomUUID(), round_id: roundId, group_number: groupNumber }));
+  let state = {
+    participants,
+    match_rounds: [{ id: roundId, mode: 'team', target_size: 2, is_active: true, created_at: createdAt }],
+    match_groups: groups,
+    match_members: participants.map((person, index) => ({ group_id: groups[Math.floor(index / 2)].id, participant_id: person.id, seq: index % 2 })),
+    match_control: [{ id: true, revision: 0, draw_started_at: new Date(Date.now() - 10000).toISOString() }],
+    participant_submissions: [],
   };
+  backend.validateState(state);
   const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
-  const checkRevision = value => {
-    if (value !== revision) fail('40001', 'Event changed');
-  };
-  const validateParticipant = data => {
-    if (typeof data.name !== 'string' || !data.name.trim() || data.name.trim().length > 20 ||
-        typeof data.team !== 'string' || !data.team.trim() ||
-        typeof data.prayer !== 'string' || !data.prayer.trim() || data.prayer.trim().length > 500) {
-      fail('INVALID', 'Invalid participant');
-    }
-  };
 
-  function dispatch(operation, data = {}) {
-    if (operation === 'snapshot') return { participants: people, round, revision, drawStartedAt, serverTime: new Date().toISOString() };
-    if (operation === 'revision') return { revision };
-    if (operation === 'participant') return people.find(p => p.id === data.id) ?? null;
-    if (operation === 'submit') {
-      if (!data.requestId) fail('INVALID', 'Missing submission request');
-      if (submissions.has(data.requestId)) return submissions.get(data.requestId);
-      validateParticipant(data);
-      const person = {
-        id: randomUUID(), name: data.name.trim(), team: data.team.trim(), prayer_request: data.prayer.trim(),
-        created_at: new Date().toISOString(), edit_version: 0,
-      };
-      people.push(person);
-      submissions.set(data.requestId, person.id);
-      revision++;
-      return person.id;
+  function dispatch(operation, payload = {}) {
+    if (operation === 'revision') {
+      const control = state.match_control[0];
+      return { revision: control.revision, drawStartedAt: control.draw_started_at, serverTime: new Date().toISOString() };
     }
-    if (operation === 'edit') {
-      validateParticipant(data);
-      const person = people.find(p => p.id === data.id);
-      if (!person || person.edit_version !== data.version) fail('40001', 'Participant changed');
-      Object.assign(person, { name: data.name.trim(), team: data.team.trim(), prayer_request: data.prayer.trim(), edit_version: person.edit_version + 1 });
-      revision++;
-      return person.edit_version;
+    if (operation === 'participant') {
+      backend.assertUuid(payload.id);
+      return state.participants.find(person => person.id === payload.id) ?? null;
     }
-    if (operation === 'append') {
-      checkRevision(data.revision);
-      if (!round) fail('P0002', 'No active groups');
-      const assigned = new Set(round.groups.flatMap(group => group.members.map(person => person.id)));
-      const pending = people.filter(person => !assigned.has(person.id));
-      for (const person of pending) {
-        [...round.groups].sort((a, b) => a.members.length - b.members.length)[0].members.push(person);
-      }
-      if (pending.length) revision++;
-      return pending.length;
+    // A failed command must leave every table unchanged, like atomic batchUpdate.
+    const draft = structuredClone(state);
+    const result = backend.applyOperation(draft, operation, payload);
+    if (result.changed) {
+      backend.validateState(draft);
+      state = draft;
     }
-    if (operation === 'command') {
-      checkRevision(data.revision);
-      const payload = data.payload ?? {};
-      if (data.operation === 'draw') {
-        if (!round) fail('P0002', 'No active groups');
-        drawStartedAt = new Date().toISOString();
-      } else if (data.operation === 'publish') {
-        if (round && payload.confirm !== '재편성') fail('INVALID', 'Confirmation required');
-        if (!Number.isInteger(payload.target) || payload.target < 2 || payload.target > 10 || !['team', 'random'].includes(payload.mode)) {
-          fail('INVALID', 'Invalid matching settings');
-        }
-        const assignments = payload.assignments;
-        const expected = people.map(person => person.id).sort();
-        if (!Array.isArray(assignments) || !expected.length ||
-            JSON.stringify(assignments.map(row => row.participant_id).sort()) !== JSON.stringify(expected)) {
-          fail('40001', 'Roster changed');
-        }
-        const groups = new Map();
-        for (const assignment of assignments) {
-          if (!Number.isInteger(assignment.group_number) || assignment.group_number < 1) fail('INVALID', 'Invalid group');
-          if (!groups.has(assignment.group_number)) groups.set(assignment.group_number, { groupNumber: assignment.group_number, members: [] });
-          groups.get(assignment.group_number).members.push(people.find(person => person.id === assignment.participant_id));
-        }
-        round = { id: randomUUID(), mode: payload.mode, targetSize: payload.target, createdAt: new Date().toISOString(), groups: [...groups.values()] };
-        drawStartedAt = null;
-      } else if (data.operation === 'unpublish') {
-        round = null;
-        drawStartedAt = null;
-      } else if (data.operation === 'delete') {
-        const index = people.findIndex(person => person.id === payload.id);
-        if (index >= 0) people.splice(index, 1);
-        if (round) for (const group of round.groups) group.members = group.members.filter(person => person.id !== payload.id);
-        for (const [requestId, id] of submissions) if (id === payload.id) submissions.delete(requestId);
-      } else if (data.operation === 'reset' && payload.confirm === '삭제') {
-        people.splice(0);
-        submissions.clear();
-        round = null;
-        drawStartedAt = null;
-      } else fail('INVALID', 'Unsupported fixture command');
-      revision++;
-      return null;
-    }
-    fail('INVALID', 'Unsupported fixture operation');
+    return result.data;
   }
 
   return http.createServer(async (req, res) => {

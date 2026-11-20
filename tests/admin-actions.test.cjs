@@ -52,7 +52,7 @@ function eventHarness({ data = 3, error = null } = {}) {
   return { event, calls, invalidatedTags };
 }
 
-function harness({ admin = true, count = 3, conflict = false, active = true, participants = people() } = {}) {
+function harness({ admin = true, count = 3, conflict = false, active = true, participants = people(), revision = 17 } = {}) {
   const writes = [], appends = [], reads = [], invalidations = [];
   const { event } = eventHarness();
   const actions = load('src/app/admin/actions.ts', {
@@ -71,7 +71,7 @@ function harness({ admin = true, count = 3, conflict = false, active = true, par
         if (conflict) throw new Error('Stale event');
       },
       getEventSnapshot: async () => {
-        reads.push(true); return { participants, round: active ? { id: 'round' } : null, revision: 17 };
+        reads.push(true); return { participants, round: active ? { id: 'round' } : null, revision };
       },
     },
     '@/lib/matching': matching,
@@ -97,8 +97,9 @@ test('all administrator mutations require authentication before writing', async 
   const h = harness({ admin: false });
   const requests = [
     ['applyParticipantsAction', { revision: 17 }],
-    ['runMatchingAction', { revision: 17, target_size: 4, mode: 'team', confirm: '재편성' }],
+    ['startMatchingDrawAction', { revision: 17, target_size: 4, mode: 'team', confirm: '재편성' }],
     ['drawAction', { revision: 17 }], ['unpublishAction', { revision: 17 }],
+    ['restoreRoundAction', { revision: 17, round_id: '38a8a4fe-0b74-4589-9cf0-3ec119c3981d' }],
     ['deleteParticipantAction', { revision: 17, id: 'id-0' }],
     ['resetAllAction', { revision: 17, confirm: '삭제' }],
   ];
@@ -124,11 +125,11 @@ test('rematching validates size, mode, nonempty roster and confirmation before w
     { target_size: 4, mode: 'bad' }, { target_size: 4, mode: 'team', confirm: '' },
   ]) {
     const h = harness();
-    const result = await h.actions.runMatchingAction(form({ revision: 17, confirm: '재편성', ...values }));
+    const result = await h.actions.startMatchingDrawAction(form({ revision: 17, confirm: '재편성', ...values }));
     assert.equal(typeof result.error, 'string'); assert.equal(h.writes.length, 0);
   }
   const empty = harness({ participants: [] });
-  assert.match((await empty.actions.runMatchingAction(form({ revision: 17, target_size: 4, mode: 'team', confirm: '재편성' }))).error, /참가자가 없습니다/);
+  assert.match((await empty.actions.startMatchingDrawAction(form({ revision: 17, target_size: 4, mode: 'team', confirm: '재편성' }))).error, /참가자가 없습니다/);
   assert.equal(empty.writes.length, 0);
 });
 
@@ -136,12 +137,13 @@ test('initial matching and confirmed replacement support 2-10 people in both mod
   for (const active of [false, true]) for (const mode of ['team', 'random']) for (let size = 2; size <= 10; size++) {
     const h = harness({ active });
     const before = JSON.stringify(h.participants);
-    const result = await h.actions.runMatchingAction(form({ revision: 17, target_size: size, mode, ...(active ? { confirm: '재편성' } : {}) }));
-    assert.equal(result.error, undefined); assert.match(result.message, /명단을 유지/);
+    const result = await h.actions.startMatchingDrawAction(form({ revision: 17, target_size: size, mode, ...(active ? { confirm: '재편성' } : {}) }));
+    assert.equal(result.error, undefined); assert.match(result.message, /출력 화면에 결과가 공개/);
     assert.equal(h.appends.length, 0); assert.equal(h.writes.length, 1);
     const command = h.writes[0];
     assert.equal(command.operation, 'publish'); assert.equal(command.revision, 17);
     assert.equal(command.payload.target, size); assert.equal(command.payload.mode, mode);
+    assert.equal(command.payload.draw, true);
     assert.deepEqual(command.payload.assignments.map(row => row.participant_id).sort(), h.participants.map(p => p.id).sort());
     assert.ok(command.payload.assignments.every(row => Number.isInteger(row.group_number) && row.group_number > 0));
     assert.equal(JSON.stringify(h.participants), before);
@@ -150,10 +152,27 @@ test('initial matching and confirmed replacement support 2-10 people in both mod
 
 test('a stale replacement is rejected once rather than silently recomputed and retried', async () => {
   const h = harness({ conflict: true });
-  const result = await h.actions.runMatchingAction(form({ revision: 17, target_size: 4, mode: 'team', confirm: '재편성' }));
+  const result = await h.actions.startMatchingDrawAction(form({ revision: 17, target_size: 4, mode: 'team', confirm: '재편성' }));
   assert.equal(result.error, 'Stale event'); assert.equal(result.message, undefined);
   assert.equal(h.writes.length, 1); assert.equal(h.reads.length, 1);
   assert.equal(h.invalidations.length, 0);
+});
+
+test('matching does not submit assignments computed from a different roster revision', async () => {
+  const h = harness({ revision: 16 });
+  const result = await h.actions.startMatchingDrawAction(form({ revision: 17, target_size: 4, mode: 'team', confirm: '재편성' }));
+  assert.match(result.error, /갱신된 명단/);
+  assert.equal(h.writes.length, 0);
+});
+
+test('restoring a dated round sends only its id and revision, without regenerating groups', async () => {
+  const h = harness();
+  const roundId = '38a8a4fe-0b74-4589-9cf0-3ec119c3981d';
+  assert.ok((await h.actions.restoreRoundAction(form({ revision: 17, round_id: 'invalid' }))).error);
+  assert.equal(h.writes.length, 0);
+  assert.match((await h.actions.restoreRoundAction(form({ revision: 17, round_id: roundId }))).message, /출력 화면/);
+  assert.deepEqual(h.writes, [{ revision: 17, operation: 'restore', payload: { roundId } }]);
+  assert.equal(h.reads.length, 0);
 });
 
 test('full deletion requires its own exact confirmation and does not masquerade as rematching', async () => {

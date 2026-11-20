@@ -3,7 +3,6 @@ import DisplayStage from './DisplayStage';
 import RealtimeRefresher from '@/components/RealtimeRefresher';
 import KeepWindowOpenNotice from '@/components/KeepWindowOpenNotice';
 import { getEventSnapshot } from '@/lib/event';
-import { isAdmin } from '@/lib/auth';
 import { createQrMatrix } from '@/lib/qr';
 import { toDisplaySnapshot } from '@/lib/display';
 
@@ -25,7 +24,7 @@ async function signupUrl(): Promise<string> {
 }
 
 export default async function DisplayPage() {
-  const [snapshot, url, admin] = await Promise.all([getEventSnapshot(), signupUrl(), isAdmin()]);
+  const [snapshot, url] = await Promise.all([getEventSnapshot(), signupUrl()]);
   const { participants, round, revision, drawStartedAt, serverTime } = snapshot;
   const qr = createQrMatrix(url);
 
@@ -65,7 +64,7 @@ export default async function DisplayPage() {
       */}
       <DisplayStage
         qr={qr}
-        revision={revision} drawStartedAt={drawStartedAt} serverTime={serverTime} admin={admin}
+        revision={revision} drawStartedAt={drawStartedAt} serverTime={serverTime}
         {...toDisplaySnapshot(participants, round)}
       />
     </main>

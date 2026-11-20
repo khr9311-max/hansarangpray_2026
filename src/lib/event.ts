@@ -2,12 +2,22 @@ import 'server-only';
 import { cache } from 'react';
 import { unstable_cache, revalidateTag } from 'next/cache';
 import { sheetRequest, SheetsError } from './sheets/server';
-import type { Participant } from './types';
+import type { MatchMode, Participant, TargetSize } from './types';
 import type { ActiveRound } from './queries';
 
 export type EventSnapshot = {
   revision: number; drawStartedAt: string | null; serverTime: string;
   participants: Participant[]; round: ActiveRound | null;
+};
+
+export type RoundHistoryEntry = {
+  id: string;
+  mode: MatchMode;
+  targetSize: TargetSize;
+  createdAt: string;
+  groupCount: number;
+  memberCount: number;
+  isActive: boolean;
 };
 
 export function readRevision(formData: FormData): number {
@@ -30,12 +40,18 @@ export const getEventSnapshot = cache(async (): Promise<EventSnapshot> => ({
   ...await readSnapshot(), serverTime: new Date().toISOString(),
 }));
 
+export const getRoundHistory = unstable_cache(
+  () => sheetRequest<RoundHistoryEntry[]>('history'),
+  ['prayer-sheets-round-history', process.env.GOOGLE_SHEETS_WEB_APP_URL ?? 'unconfigured'],
+  { revalidate: 2, tags: [EVENT_CACHE_TAG] },
+);
+
 function commandError(error: unknown): never {
   if (error instanceof SheetsError && error.code === '40001') {
     throw new Error('다른 기기의 조작 또는 새 신청이 반영되었습니다. 갱신된 결과를 확인하고 다시 눌러 주세요.');
   }
   if (error instanceof SheetsError && error.code === 'P0002') {
-    throw new Error('먼저 초기화 후 조 편성으로 첫 조를 만들어 주세요.');
+    throw new Error('현재 사용할 수 있는 편성이 없습니다. 목록을 새로고침해 주세요.');
   }
   throw new Error('처리하지 못했습니다. 최신 결과를 확인하고 다시 시도해 주세요.');
 }

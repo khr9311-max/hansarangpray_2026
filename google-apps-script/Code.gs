@@ -234,9 +234,38 @@ function snapshot(state) {
   };
 }
 
+/** Private administrative metadata only; never add history to public snapshots. */
+function roundHistory(state) {
+  var groupCounts = {}, memberCounts = {}, groupById = {}, nonemptyGroups = {};
+  state.match_groups.forEach(function (g) { groupById[g.id] = g; });
+  state.match_members.forEach(function (m) {
+    var group = groupById[m.group_id];
+    memberCounts[group.round_id] = (memberCounts[group.round_id] || 0) + 1;
+    if (!nonemptyGroups[group.id]) {
+      nonemptyGroups[group.id] = true;
+      groupCounts[group.round_id] = (groupCounts[group.round_id] || 0) + 1;
+    }
+  });
+  return state.match_rounds.filter(function (r) { return memberCounts[r.id] > 0; })
+    .sort(function (a, b) { return Date.parse(b.created_at) - Date.parse(a.created_at) || a.id.localeCompare(b.id); })
+    .map(function (r) {
+      return { id: r.id, mode: r.mode, targetSize: r.target_size, createdAt: r.created_at,
+        groupCount: groupCounts[r.id], memberCount: memberCounts[r.id], isActive: r.is_active };
+    });
+}
+function scheduleDraw(control) {
+  var drawNow = Date.now();
+  if (control.draw_started_at && Date.parse(control.draw_started_at) + 3200 > drawNow) fail('40001', '이미 추첨을 준비하거나 진행하고 있습니다.');
+  return new Date(drawNow + 8000).toISOString();
+}
+function assertDrawIdle(control) {
+  if (control.draw_started_at && Date.parse(control.draw_started_at) + 3200 > Date.now()) fail('40001', '이미 추첨을 준비하거나 진행하고 있습니다.');
+}
+
 function applyOperation(state, operation, payload) {
   var control = state.match_control[0], person, active, data;
   if (operation === 'snapshot') return { data: snapshot(state), changed: false };
+  if (operation === 'history') return { data: roundHistory(state), changed: false };
   if (operation === 'export') return { data: state, changed: false };
   if (operation === 'import') {
     var incoming = payload.data;
@@ -283,8 +312,10 @@ function applyOperation(state, operation, payload) {
   }
   var action = payload.operation, body = payload.payload || {};
   if (action === 'publish') {
+    assertDrawIdle(control);
     if (state.match_rounds.some(function (r) { return r.is_active; }) && body.confirm !== '재편성') fail('22023', '기존 조 편성을 바꾸려면 재편성을 확인해 주세요.');
     if (!isInteger(body.target, 2) || body.target > 10 || ['team', 'random'].indexOf(body.mode) < 0) fail('22023', '매칭 설정을 확인해 주세요.');
+    if (body.draw !== undefined && typeof body.draw !== 'boolean') fail('22023', '추첨 설정을 확인해 주세요.');
     if (!Array.isArray(body.assignments)) fail('22023', '조 편성 명단이 필요합니다.');
     var roster = state.participants.map(function (p) { return p.id; }).sort();
     var requested = body.assignments.map(function (a) { return a.participant_id; }).sort();
@@ -303,13 +334,19 @@ function applyOperation(state, operation, payload) {
       state.match_members.push({ group_id: group.id, participant_id: assignment.participant_id,
         seq: state.match_members.filter(function (m) { return m.group_id === group.id; }).length });
     });
-    control.draw_started_at = null;
+    control.draw_started_at = body.draw === true ? scheduleDraw(control) : null;
+  } else if (action === 'restore') {
+    assertDrawIdle(control);
+    assertUuid(body.roundId);
+    active = state.match_rounds.filter(function (r) { return r.id === body.roundId; })[0];
+    if (!active || !roundHistory(state).some(function (r) { return r.id === active.id; })) fail('P0002', '다시 출력할 수 있는 조 편성 기록이 없습니다.');
+    var restoredDrawAt = scheduleDraw(control);
+    state.match_rounds.forEach(function (r) { r.is_active = r.id === active.id; });
+    control.draw_started_at = restoredDrawAt;
   } else if (action === 'draw') {
     if (!state.match_rounds.some(function (r) { return r.is_active; })) fail('P0002', '먼저 조 편성을 완료해 주세요.');
-    var drawNow = Date.now();
-    if (control.draw_started_at && Date.parse(control.draw_started_at) + 3200 > drawNow) fail('40001', '이미 추첨을 준비하거나 진행하고 있습니다.');
     // Give every polling phone time to observe one shared future start time.
-    control.draw_started_at = new Date(drawNow + 8000).toISOString();
+    control.draw_started_at = scheduleDraw(control);
     // Reveal saved groups only; never append participants implicitly.
   } else if (action === 'unpublish') {
     state.match_rounds.forEach(function (r) { r.is_active = false; }); control.draw_started_at = null;

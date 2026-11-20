@@ -81,25 +81,6 @@ test('edit tokens reject missing, tampered, expired and other participant tokens
   assert.equal(access.validEditToken('one', access.editToken('one', Date.now()-1)), false);
 });
 
-test('shared draw requires admin, passes the displayed revision, and reports conflicts', async () => {
-  let admin = false, calls = 0, conflict = false;
-  const actions = load('src/app/display/actions.ts', {
-    'next/cache': { revalidatePath() {} },
-    '@/lib/auth': { isAdmin: async () => admin },
-    '@/lib/event': { eventCommand: async (revision, operation) => {
-      assert.equal(revision, 17); assert.equal(operation, 'draw'); calls++;
-      if (conflict) throw new Error('changed');
-    } },
-  });
-  assert.equal((await actions.prepareDrawAction(17)).requiresAdmin, true);
-  assert.equal(calls, 0);
-  admin = true;
-  assert.equal((await actions.prepareDrawAction(17)).status, 'success');
-  conflict = true;
-  assert.equal((await actions.prepareDrawAction(17)).status, 'error');
-  assert.equal(calls, 2);
-});
-
 test('a newly opened display never reveals results during a shared draw', () => {
   const start = '2026-10-25T12:00:00.000Z';
   assert.equal(display.getDisplayPhase(false, null, start), 'idle');

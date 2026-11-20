@@ -12,8 +12,13 @@ function empty() {
 }
 function harness() {
   let stored = empty(), writes = 0, locks = 0, failWrite = false;
+  let clock = Date.now();
+  class TestDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [clock])); }
+    static now() { return clock; }
+  }
   const context = vm.createContext({
-    console, Utilities: { getUuid: randomUUID },
+    console, Date: TestDate, Utilities: { getUuid: randomUUID },
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'SHEETS_API_SECRET' ? secret : 'sheet-id' }) },
     LockService: { getScriptLock: () => ({ tryLock: () => { locks++; return true; }, hasLock: () => true, releaseLock() {} }) },
     SpreadsheetApp: { openById: () => ({}) },
@@ -38,10 +43,11 @@ function harness() {
   }
   function submit(name = '참가자') { return ok('submit', { requestId: randomUUID(), name, team: '전도팀', prayer: '기도제목' }); }
   function command(operation, payload = {}, revision = stored.match_control[0].revision) { return call('command', { revision, operation, payload }); }
-  function publish(target = 2, mode = 'team') {
-    return command('publish', { target, mode, confirm: '재편성', assignments: stored.participants.map((p, i) => ({ participant_id: p.id, group_number: Math.floor(i / target) + 1 })) });
+  function publish(target = 2, mode = 'team', draw) {
+    return command('publish', { target, mode, draw, confirm: '재편성', assignments: stored.participants.map((p, i) => ({ participant_id: p.id, group_number: Math.floor(i / target) + 1 })) });
   }
-  return { context, call, ok, submit, command, publish, state: () => clone(stored), writes: () => writes, locks: () => locks, failWrites: () => { failWrite = true; } };
+  return { context, call, ok, submit, command, publish, state: () => clone(stored), writes: () => writes, locks: () => locks, now: () => clock,
+    advanceTime: milliseconds => { clock += milliseconds; }, failWrites: () => { failWrite = true; } };
 }
 
 test('authentication rejects requests before accessing storage; GET reveals no records', () => {
@@ -91,7 +97,7 @@ test('signups wait for explicit append; append preserves groups, reveal and old 
   assert.equal(h.call('append', { revision: 0 }).error.code, 'P0002');
   for (let i = 0; i < 6; i++) h.submit('기존' + i);
   assert.equal(h.publish(2).ok, true);
-  const requestedAt = Date.now();
+  const requestedAt = h.now();
   assert.equal(h.command('draw').ok, true);
   const old = h.state();
   assert.ok(Date.parse(old.match_control[0].draw_started_at) >= requestedAt + 8000, 'shared start leaves time for polling clients');
@@ -149,6 +155,82 @@ test('import preserves IDs, history, edit versions and retry tokens; rejects cor
   const corrupt = clone(original); corrupt.match_members[0].participant_id = randomUUID();
   assert.equal(harness().call('import', { data: corrupt }).error.code, '22023');
   assert.equal(harness().call('import', {}).error.code, '22023');
+});
+
+test('history is private metadata, newest first, includes active and excludes unusable empty rounds', () => {
+  const h = harness();
+  assert.deepEqual(h.ok('history'), []);
+  const id = h.submit(); h.submit();
+  assert.equal(h.publish(2).ok, true);
+  const first = h.state().match_rounds[0].id;
+  h.advanceTime(1000);
+  assert.equal(h.publish(3, 'random').ok, true);
+  const second = h.state().match_rounds[1].id;
+  const writes = h.writes();
+  assert.deepEqual(h.ok('history'), [
+    { id: second, mode: 'random', targetSize: 3, createdAt: h.state().match_rounds[1].created_at, groupCount: 1, memberCount: 2, isActive: true },
+    { id: first, mode: 'team', targetSize: 2, createdAt: h.state().match_rounds[0].created_at, groupCount: 1, memberCount: 2, isActive: false },
+  ]);
+  assert.equal(h.writes(), writes);
+  assert.equal(h.call('history', {}, 'wrong').error.code, '401');
+  const publicSnapshot = h.ok('snapshot');
+  assert.deepEqual(Object.keys(publicSnapshot).sort(), ['drawStartedAt', 'participants', 'revision', 'round', 'serverTime']);
+  assert.ok(!JSON.stringify(publicSnapshot).includes(first), 'public snapshot must not expose past round metadata');
+  assert.equal(h.command('delete', { id }).ok, true);
+  assert.equal(h.command('delete', { id: h.state().participants[0].id }).ok, true);
+  assert.deepEqual(h.ok('history'), []);
+  assert.equal(h.command('restore', { roundId: first }).error.code, 'P0002');
+});
+
+test('restore reactivates the chosen saved round and schedules a draw without touching memberships', () => {
+  const h = harness();
+  for (let i = 0; i < 5; i++) h.submit('기존' + i);
+  h.publish(2);
+  const original = h.state(), firstId = original.match_rounds[0].id;
+  h.advanceTime(1000); h.publish(4, 'random');
+  h.submit('늦게온 참가자');
+  const before = h.state(), staleRevision = before.match_control[0].revision - 1;
+  assert.equal(h.command('restore', { roundId: firstId }, staleRevision).error.code, '40001');
+  assert.equal(h.command('restore', { roundId: randomUUID() }).error.code, 'P0002');
+  assert.deepEqual(h.state(), before);
+  const writes = h.writes(), requestedAt = h.now();
+  assert.equal(h.command('restore', { roundId: firstId }).ok, true);
+  const after = h.state();
+  assert.equal(h.writes(), writes + 1, 'switch and draw schedule commit once');
+  assert.deepEqual(after.participants, before.participants);
+  assert.deepEqual(after.match_groups, before.match_groups);
+  assert.deepEqual(after.match_members, before.match_members);
+  assert.deepEqual(after.participant_submissions, before.participant_submissions);
+  assert.equal(after.match_rounds.find(r => r.is_active).id, firstId);
+  assert.equal(after.match_rounds.find(r => r.id === firstId).created_at, original.match_rounds[0].created_at);
+  assert.equal(after.match_control[0].revision, before.match_control[0].revision + 1);
+  assert.equal(Date.parse(after.match_control[0].draw_started_at), requestedAt + 8000);
+  const snapshot = h.ok('snapshot');
+  assert.equal(snapshot.round.id, firstId);
+  assert.equal(snapshot.round.groups.flatMap(g => g.members).length, 5, 'pending signup must remain unassigned');
+});
+
+test('single-button publish schedules draw atomically and pending draws reject replacement or restart', () => {
+  const h = harness(); h.submit(); h.submit();
+  const before = h.state(), writes = h.writes(), requestedAt = h.now();
+  assert.equal(h.publish(2, 'team', true).ok, true);
+  const after = h.state();
+  assert.equal(h.writes(), writes + 1);
+  assert.equal(after.match_control[0].revision, before.match_control[0].revision + 1);
+  assert.equal(Date.parse(after.match_control[0].draw_started_at), requestedAt + 8000);
+  const roundId = after.match_rounds[0].id;
+  for (const attempt of [() => h.command('draw'), () => h.command('restore', { roundId }), () => h.publish(3, 'random')]) {
+    assert.equal(attempt().error.code, '40001');
+    assert.deepEqual(h.state(), after);
+  }
+  h.advanceTime(8000 + 3100);
+  assert.equal(h.command('restore', { roundId }).error.code, '40001', 'replacement is also blocked during the shake');
+  h.advanceTime(100);
+  assert.equal(h.publish(3, 'random', false).ok, true);
+  assert.equal(h.state().match_control[0].draw_started_at, null, 'legacy publish still waits for explicit draw');
+  const saved = h.state();
+  assert.equal(h.publish(3, 'team', 'true').error.code, '22023');
+  assert.deepEqual(h.state(), saved);
 });
 
 test('upstream commit failure never reports success or leaks upstream details', () => {
