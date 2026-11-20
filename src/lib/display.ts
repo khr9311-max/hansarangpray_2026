@@ -2,11 +2,12 @@ import type { Participant, PrayerGroup } from './types';
 
 export type DisplayMember = { id: string; name: string };
 export const DRAW_MS = 3200;
-export type DisplayPhase = 'idle' | 'ready' | 'drawing' | 'revealed';
+export type DisplayPhase = 'idle' | 'ready' | 'scheduled' | 'drawing' | 'revealed';
 
 export function getDisplayPhase(hasRound: boolean, startedAt: string | null, serverTime: string): DisplayPhase {
   if (!hasRound) return 'idle';
   if (!startedAt) return 'ready';
+  if (Date.parse(serverTime) < Date.parse(startedAt)) return 'scheduled';
   return Date.parse(serverTime) - Date.parse(startedAt) < DRAW_MS ? 'drawing' : 'revealed';
 }
 export type DisplayRound = {

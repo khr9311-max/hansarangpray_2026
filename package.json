@@ -7,11 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --test tests/*.test.cjs"
+    "test": "node --test tests/*.test.cjs google-apps-script/backend.test.cjs scripts/migrate-to-sheets.test.mjs",
+    "migrate:sheets": "node scripts/migrate-to-sheets.mjs"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.5.2",
-    "@supabase/supabase-js": "^2.45.4",
     "next": "^15.1.0",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",

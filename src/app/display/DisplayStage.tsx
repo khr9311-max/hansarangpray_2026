@@ -131,8 +131,16 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
     if (drawTimer.current) clearTimeout(drawTimer.current);
     if (!serverRound) { setPhase('idle'); return; }
     if (!drawStartedAt) { setPhase('ready'); return; }
-    const remaining = DRAW_MS - (Date.parse(serverTime) - Date.parse(drawStartedAt));
+    const untilStart = Date.parse(drawStartedAt) - Date.parse(serverTime);
+    const remaining = DRAW_MS + untilStart;
     if (remaining <= 0) setPhase('revealed');
+    else if (untilStart > 0) {
+      setPhase('scheduled');
+      drawTimer.current = setTimeout(() => {
+        setPhase('drawing');
+        drawTimer.current = setTimeout(() => setPhase('revealed'), DRAW_MS);
+      }, untilStart);
+    }
     else {
       setPhase('drawing');
       drawTimer.current = setTimeout(() => setPhase('revealed'), remaining);
@@ -151,7 +159,7 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
   }, [phase]);
 
   const startDraw = useCallback(async () => {
-    if (!admin || !round || phase === 'drawing' || preparingRef.current) return;
+    if (!admin || !round || phase === 'drawing' || phase === 'scheduled' || preparingRef.current) return;
     preparingRef.current = true;
     setPreparing(true); setDrawError(null);
     try {
@@ -325,6 +333,8 @@ function Stage({ participants, round: serverRound, pendingCount, qr, revision, d
           <p className="text-2xl font-semibold tracking-wide text-white/70">
             섞는 중…
           </p>
+        ) : phase === 'scheduled' ? (
+          <p role="status" className="text-2xl font-semibold tracking-wide text-white/70">잠시 후 모든 화면에서 추첨을 시작합니다…</p>
         ) : phase === 'ready' && admin ? (
           <button
             type="button"

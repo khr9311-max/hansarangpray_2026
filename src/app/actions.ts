@@ -1,7 +1,8 @@
 'use server';
 
-import { createAdminClient } from '@/lib/supabase/server';
-import { revalidatePath } from 'next/cache';
+import { sheetRequest, SheetsError } from '@/lib/sheets/server';
+import { revalidatePath, revalidateTag } from 'next/cache';
+import { EVENT_CACHE_TAG } from '@/lib/event';
 import { allowParticipantEdit, rememberParticipantAccess, validEditToken } from '@/lib/participant-access';
 import { TEAMS } from '@/lib/types';
 
@@ -53,14 +54,11 @@ export async function submitParticipant(
   }
 
   try {
-    const supabase = createAdminClient();
-    const { data, error } = id
-      ? await supabase.rpc('prayer_edit', { p_id: id, p_version: Number(formData.get('edit_version')), p_name: name, p_team: team, p_prayer: prayerRequest })
-      : await supabase.rpc('prayer_submit', { p_request_id: submissionId, p_name: name, p_team: team, p_prayer: prayerRequest });
-    if (error?.code === '40001') return { status: 'error', message: '다른 화면에서 이미 수정되었습니다. 새로고침 후 최신 내용을 확인해 주세요.' };
+    const data = id
+      ? await sheetRequest<number>('edit', { id, version: Number(formData.get('edit_version')), name, team, prayer: prayerRequest })
+      : await sheetRequest<string>('submit', { requestId: submissionId, name, team, prayer: prayerRequest });
 
-    if (error || !data) {
-      console.error('[submitParticipant]', error);
+    if (data === null || data === undefined || data === '') {
       return {
         status: 'error',
         message: '접수 중 문제가 생겼습니다. 잠시 후 다시 시도해 주세요.',
@@ -68,6 +66,7 @@ export async function submitParticipant(
     }
 
     const participantId = id || String(data);
+    revalidateTag(EVENT_CACHE_TAG);
     // 관리자 권한으로만 수정한 경우 본인용 권한을 새로 부여하지 않습니다.
     // 전달받은 유효한 수정 링크는 저장 후 같은 브라우저에서 계속 쓸 수 있습니다.
     if (!id || validEditToken(id, editToken)) await rememberParticipantAccess(participantId);
@@ -79,7 +78,7 @@ export async function submitParticipant(
       participantId,
     };
   } catch (err) {
-    console.error('[submitParticipant exception]', err);
+    if (err instanceof SheetsError && err.code === '40001') return { status: 'error', message: '다른 화면에서 이미 수정되었습니다. 새로고침 후 최신 내용을 확인해 주세요.' };
     return {
       status: 'error',
       message: '서버 연결에 실패했습니다. 데이터베이스 상태를 확인해 주세요.',

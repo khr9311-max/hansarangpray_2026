@@ -31,10 +31,7 @@ export default async function DisplayPage() {
 
   return (
     <main className="flex min-h-dvh flex-col bg-slate-950 px-4 py-6 sm:px-8 text-white">
-      <RealtimeRefresher
-        channel="display"
-        tables={['match_control', 'participants', 'match_rounds', 'match_groups', 'match_members']}
-      />
+      <RealtimeRefresher revision={revision} />
 
       <header className="mb-5 flex items-baseline justify-between">
         <div>

@@ -5,18 +5,21 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const requestId = '38a8a4fe-0b74-4589-9cf0-3ec119c3981d';
 
-function harness({ allowed = true, rpcError = null } = {}) {
-  const calls = [], granted = [], invalidated = [];
-  let clientCount = 0;
+function harness({ allowed = true, storageError = null } = {}) {
+  const calls = [], granted = [], invalidated = [], invalidatedTags = [];
+  let serverCallCount = 0;
+  class SheetsError extends Error {
+    constructor(code, message = 'Storage request failed') { super(message); this.code = code; }
+  }
   const imports = {
-    '@/lib/supabase/server': { createAdminClient() {
-      clientCount++;
-      return { async rpc(name, args) {
-        calls.push({ name, args });
-        return { data: name === 'prayer_edit' ? args.p_version + 1 : 'new-participant-id', error: rpcError };
-      } };
+    '@/lib/sheets/server': { SheetsError, async sheetRequest(operation, payload) {
+      serverCallCount++;
+      calls.push({ operation, payload });
+      if (storageError) throw new SheetsError(storageError.code, storageError.message);
+      return operation === 'edit' ? payload.version + 1 : 'new-participant-id';
     } },
-    'next/cache': { revalidatePath: (...args) => invalidated.push(args) },
+    'next/cache': { revalidatePath: (...args) => invalidated.push(args), revalidateTag: tag => invalidatedTags.push(tag) },
+    '@/lib/event': { EVENT_CACHE_TAG: 'prayer-sheets-event' },
     '@/lib/participant-access': {
       allowParticipantEdit: async () => allowed,
       rememberParticipantAccess: async id => granted.push(id),
@@ -32,7 +35,7 @@ function harness({ allowed = true, rpcError = null } = {}) {
     assert.ok(name in imports, `Unexpected import ${name}`);
     return imports[name];
   } });
-  return { run: data => exports.submitParticipant({ status: 'idle', message: '' }, data), calls, granted, invalidated, get clientCount() { return clientCount; } };
+  return { run: data => exports.submitParticipant({ status: 'idle', message: '' }, data), calls, granted, invalidated, invalidatedTags, get serverCallCount() { return serverCallCount; } };
 }
 
 function form(overrides = {}) {
@@ -46,36 +49,37 @@ test('new registration grants only its returned participant ownership', async ()
   const result = await h.run(form());
   assert.equal(result.status, 'success');
   assert.equal(result.participantId, 'new-participant-id');
-  assert.equal(h.calls[0].name, 'prayer_submit');
-  assert.equal(h.calls[0].args.p_request_id, requestId);
+  assert.equal(h.calls[0].operation, 'submit');
+  assert.equal(h.calls[0].payload.requestId, requestId);
   assert.deepEqual(h.granted, ['new-participant-id']);
+  assert.deepEqual(h.invalidatedTags, ['prayer-sheets-event']);
 });
 
-test('new registration rejects missing or malformed submission keys before database access', async () => {
+test('new registration rejects missing or malformed submission keys before storage access', async () => {
   for (const value of ['', 'not-a-uuid', '38a8a4fe-0b74-4589-9cf0-3ec119c3981d-extra']) {
     const h = harness();
     const data = form({ submission_id: value });
     if (!value) data.delete('submission_id');
     assert.equal((await h.run(data)).status, 'error');
-    assert.equal(h.clientCount, 0);
+    assert.equal(h.serverCallCount, 0);
     assert.deepEqual(h.granted, []);
   }
 });
 
 test('registration retry forwards the same private submission key', async () => {
-  const h = harness({ rpcError: { code: 'XX000' } });
+  const h = harness({ storageError: { code: 'XX000' } });
   const data = form();
   assert.equal((await h.run(data)).status, 'error');
   assert.equal((await h.run(data)).status, 'error');
   assert.equal(h.calls.length, 2);
-  assert.deepEqual(h.calls.map(c => c.args.p_request_id), [requestId, requestId]);
+  assert.deepEqual(h.calls.map(c => c.payload.requestId), [requestId, requestId]);
 });
 
-test('editing rejects unauthorized access before constructing an admin client', async () => {
+test('editing rejects unauthorized access before sending a storage request', async () => {
   const h = harness({ allowed: false });
   const result = await h.run(form({ participant_id: 'someone-else', edit_version: '0' }));
   assert.equal(result.status, 'error');
-  assert.equal(h.clientCount, 0);
+  assert.equal(h.serverCallCount, 0);
   assert.deepEqual(h.granted, []);
 });
 
@@ -84,10 +88,10 @@ test('existing owner or admin edits preserve the participant id and do not grant
   const result = await h.run(form({ participant_id: 'existing-id', edit_version: '4', name: '수정이름' }));
   assert.equal(result.status, 'success');
   assert.equal(result.participantId, 'existing-id');
-  assert.equal(h.calls[0].name, 'prayer_edit');
-  assert.equal(h.calls[0].args.p_id, 'existing-id');
-  assert.equal(h.calls[0].args.p_version, 4);
-  assert.equal(h.calls[0].args.p_name, '수정이름');
+  assert.equal(h.calls[0].operation, 'edit');
+  assert.equal(h.calls[0].payload.id, 'existing-id');
+  assert.equal(h.calls[0].payload.version, 4);
+  assert.equal(h.calls[0].payload.name, '수정이름');
   assert.deepEqual(h.granted, []);
 });
 
@@ -99,21 +103,22 @@ test('a valid participant edit link grants browser ownership only after saving',
 });
 
 test('stale edits return a conflict without claiming success, granting cookies, or retrying', async () => {
-  const h = harness({ rpcError: { code: '40001' } });
+  const h = harness({ storageError: { code: '40001' } });
   const result = await h.run(form({ participant_id: 'existing-id', edit_version: '4', edit_token: 'valid-link-for-existing-id' }));
   assert.equal(result.status, 'error');
   assert.match(result.message, /이미 수정/);
   assert.equal(h.calls.length, 1);
   assert.deepEqual(h.granted, []);
   assert.deepEqual(h.invalidated, []);
+  assert.deepEqual(h.invalidatedTags, []);
 });
 
-test('invalid data and database failures never claim successful submission', async () => {
+test('invalid data and storage failures never claim successful submission', async () => {
   const invalid = harness();
   assert.equal((await invalid.run(form({ team: '없는 팀' }))).status, 'error');
   assert.equal((await invalid.run(form({ name: 'x'.repeat(21) }))).status, 'error');
-  assert.equal(invalid.clientCount, 0);
-  const failed = harness({ rpcError: { code: 'XX000' } });
+  assert.equal(invalid.serverCallCount, 0);
+  const failed = harness({ storageError: { code: 'XX000' } });
   assert.equal((await failed.run(form())).status, 'error');
   assert.deepEqual(failed.granted, []);
 });
@@ -123,7 +128,7 @@ test('share-in-group choice saves the agreed message even without a textarea val
   const data = form({ share_in_group: 'on' });
   data.delete('prayer_request');
   assert.equal((await h.run(data)).status, 'success');
-  assert.equal(h.calls[0].args.p_prayer, '기도제목은 매칭된 조 안에서 직접 나눌게요.');
+  assert.equal(h.calls[0].payload.prayer, '기도제목은 매칭된 조 안에서 직접 나눌게요.');
 });
 
 test('browser submission keys are shared across simultaneous tabs and change only on a new signup', async () => {

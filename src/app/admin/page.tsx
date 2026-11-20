@@ -35,10 +35,7 @@ export default async function AdminPage() {
 
   return (
     <main className="min-h-dvh bg-slate-50 px-5 py-8">
-      <RealtimeRefresher
-        channel="admin"
-        tables={['match_control', 'participants', 'match_rounds', 'match_groups', 'match_members']}
-      />
+      <RealtimeRefresher revision={revision} />
 
       <div className="mx-auto w-full max-w-5xl space-y-6">
         <header className="flex flex-wrap items-center justify-between gap-3">

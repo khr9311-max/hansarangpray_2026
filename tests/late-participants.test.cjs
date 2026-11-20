@@ -104,6 +104,7 @@ test('a newly opened display never reveals results during a shared draw', () => 
   const start = '2026-10-25T12:00:00.000Z';
   assert.equal(display.getDisplayPhase(false, null, start), 'idle');
   assert.equal(display.getDisplayPhase(true, null, start), 'ready');
+  assert.equal(display.getDisplayPhase(true, '2026-10-25T12:00:08.000Z', start), 'scheduled');
   assert.equal(display.getDisplayPhase(true, start, start), 'drawing');
   assert.equal(display.getDisplayPhase(true, start, '2026-10-25T12:00:03.199Z'), 'drawing');
   assert.equal(display.getDisplayPhase(true, start, '2026-10-25T12:00:03.200Z'), 'revealed');

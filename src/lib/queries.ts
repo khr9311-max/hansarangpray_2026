@@ -1,7 +1,6 @@
 import 'server-only';
 import { getEventSnapshot } from './event';
 
-import { createServerClient } from './supabase/server';
 import type { MatchMode, Participant, PrayerGroup, TargetSize } from './types';
 
 export type ActiveRound = {
@@ -21,17 +20,7 @@ export async function getParticipants(_strict = false): Promise<Participant[]> {
 
 /** 개인 링크(`/me/[id]`)용. 본인 이름 표시에만 씁니다. */
 export async function getParticipant(id: string): Promise<Participant | null> {
-  const supabase = createServerClient();
-  const { data, error } = await supabase
-    .from('participants')
-    .select('*')
-    .eq('id', id)
-    .maybeSingle();
-  if (error) {
-    console.error('[getParticipant]', error);
-    return null;
-  }
-  return (data as Participant) ?? null;
+  return (await getEventSnapshot()).participants.find(person => person.id === id) ?? null;
 }
 
 /**

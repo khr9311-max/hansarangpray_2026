@@ -29,10 +29,7 @@ export default async function MyGroupPage({
   return (
     <main className="min-h-dvh bg-slate-50 px-5 py-10">
       {/* 매칭 전이면 관리자가 확정하는 순간 자동으로 다시 그려집니다. */}
-      <RealtimeRefresher
-        channel={`me-${id}`}
-        tables={['participants', 'match_control', 'match_rounds', 'match_groups', 'match_members']}
-      />
+      <RealtimeRefresher revision={snapshot.revision} />
 
       <div className="mx-auto w-full max-w-md">
         <header className="mb-8 text-center">

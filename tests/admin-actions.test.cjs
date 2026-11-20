@@ -33,17 +33,23 @@ const people = () => Object.freeze(Array.from({ length: 7 }, (_, i) => Object.fr
 })));
 
 function eventHarness({ data = 3, error = null } = {}) {
-  const calls = [];
+  const calls = [], invalidatedTags = [];
+  class SheetsError extends Error {
+    constructor(code, message = 'Storage request failed') { super(message); this.code = code; }
+  }
   const event = load('src/lib/event.ts', {
     'server-only': {}, react: { cache: fn => fn },
-    './supabase/server': {
-      createAdminClient: () => ({ rpc: async (name, args) => {
-        calls.push({ name, args: clone(args) }); return { data, error };
-      } }),
-      createServerClient: () => ({ rpc: async () => { throw new Error('Unexpected snapshot read'); } }),
+    'next/cache': { unstable_cache: fn => fn, revalidateTag: tag => invalidatedTags.push(tag) },
+    './sheets/server': {
+      SheetsError,
+      sheetRequest: async (operation, payload) => {
+        calls.push({ operation, payload: payload === undefined ? undefined : clone(payload) });
+        if (error) throw new SheetsError(error.code, error.message);
+        return data;
+      },
     },
   });
-  return { event, calls };
+  return { event, calls, invalidatedTags };
 }
 
 function harness({ admin = true, count = 3, conflict = false, active = true, participants = people() } = {}) {
@@ -181,14 +187,16 @@ test('missing revisions cannot trigger append or destructive administrator write
   assert.equal(h.appends.length, 0); assert.equal(h.writes.length, 0);
 });
 
-test('append RPC maps conflicts and missing-round errors without retrying, and accepts zero', async () => {
+test('append storage request maps conflicts and missing-round errors without retrying, and accepts zero', async () => {
   for (const error of [{ code: '40001' }, { code: 'P0002' }, { code: 'XX000' }]) {
     const h = eventHarness({ error });
     await assert.rejects(h.event.appendParticipants(17));
-    assert.equal(h.calls.length, 1); assert.equal(h.calls[0].name, 'prayer_append');
-    assert.deepEqual(h.calls[0].args, { p_revision: 17 });
+    assert.equal(h.calls.length, 1); assert.equal(h.calls[0].operation, 'append');
+    assert.deepEqual(h.calls[0].payload, { revision: 17 });
+    assert.deepEqual(h.invalidatedTags, []);
   }
   const noOp = eventHarness({ data: 0 });
   assert.equal(await noOp.event.appendParticipants(17), 0);
   assert.equal(noOp.calls.length, 1);
+  assert.deepEqual(noOp.invalidatedTags, ['prayer-sheets-event']);
 });
