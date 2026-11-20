@@ -60,7 +60,11 @@ async function callJson(fetchImpl, url, { headers = {}, body = {}, redirect = 'e
   } catch {
     throw new Error(`${label} 연결에 실패했습니다.`);
   }
-  if (!response.ok) throw new Error(`${label} 요청에 실패했습니다 (HTTP ${response.status}).`);
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    const code = typeof error?.code === 'string' && /^(?:[A-Z0-9]{5}|PGRST\d{3})$/.test(error.code) ? `, ${error.code}` : '';
+    throw new Error(`${label} 요청에 실패했습니다 (HTTP ${response.status}${code}).`);
+  }
   try { return await response.json(); }
   catch { throw new Error(`${label} 응답 형식을 확인해 주세요.`); }
 }
