@@ -11,7 +11,7 @@
     "migrate:sheets": "node scripts/migrate-to-sheets.mjs"
   },
   "dependencies": {
-    "next": "^15.1.0",
+    "next": "15.5.29",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -25,5 +25,10 @@
     "@types/react-dom": "^19.0.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.28"
+    }
   }
 }
