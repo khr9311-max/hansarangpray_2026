@@ -60,7 +60,9 @@ export default async function MyGroupPage({
             <p className="text-center text-sm text-slate-400">
               {group.groupNumber}조 · {group.members.length}명
             </p>
-            <p className="rounded-xl bg-brand-50 px-4 py-3 text-sm leading-relaxed text-brand-700">기도한 주차에 체크해 주세요. 같은 조에서 서로의 체크를 볼 수 있어요.</p>
+            <p className="rounded-xl bg-brand-50 px-4 py-3 text-sm leading-relaxed text-brand-700">
+              우리 조를 위해 기도한 주차에 체크해 주세요. 같은 조원과 관리자가 체크 상태를 볼 수 있어요.
+            </p>
 
             {group.members.map((member, memberIndex) => {
               const isMe = member.id === me.id;
@@ -87,7 +89,7 @@ export default async function MyGroupPage({
                     <PrayerWeekChecks key={snapshot.round.id} id={me.id} roundId={snapshot.round.id} checks={member.prayerChecks ?? EMPTY_CHECKS} />
                   ) : (
                     <div className="mt-4 border-t border-slate-200 pt-4">
-                      <p className="text-sm font-semibold text-slate-700">기도 체크</p>
+                      <p className="text-sm font-semibold text-slate-700">우리 조를 위한 기도 기록</p>
                       <ul className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4" aria-label={`${member.name}님의 주차별 기도 체크`}>
                         {PRAYER_WEEKS.map((week, index) => {
                           const checked = (member.prayerChecks ?? EMPTY_CHECKS)[index];

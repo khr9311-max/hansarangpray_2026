@@ -52,7 +52,7 @@ export default function PrayerWeekChecks({
   return (
     <div className="mt-4 border-t border-slate-200 pt-4">
       <fieldset disabled={pending} className="min-w-0 disabled:opacity-60">
-        <legend className="text-sm font-semibold text-slate-700">기도 체크</legend>
+        <legend className="text-sm font-semibold text-slate-700">우리 조를 위해 기도했어요</legend>
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
           {PRAYER_WEEKS.map((week, index) => {
             const checked = optimisticChecks[index];

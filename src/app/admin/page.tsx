@@ -3,6 +3,7 @@ import ActionForm from '@/components/ActionForm';
 import { getEventSnapshot, getRoundHistory } from '@/lib/event';
 import { editToken } from '@/lib/participant-access';
 import { prayerCheckToken } from '@/lib/prayer-access';
+import { PRAYER_WEEKS } from '@/lib/prayer-weeks';
 import LoginForm from './LoginForm';
 import RealtimeRefresher from '@/components/RealtimeRefresher';
 import { isAdmin } from '@/lib/auth';
@@ -197,29 +198,56 @@ export default async function AdminPage() {
           )}
         </section>
 
-        {/* 매칭 결과 미리보기 */}
+        {/* 현재 조별 기도 체크 현황 */}
         {round && (
           <section className="rounded-2xl border border-slate-200 bg-white p-6">
-            <h2 className="mb-4 text-sm font-semibold text-slate-500">매칭 결과</h2>
+            <div className="mb-4 space-y-2">
+              <h2 className="text-sm font-semibold text-slate-500">조별 기도 현황</h2>
+              <p className="text-xs leading-relaxed text-slate-500">각 조원이 우리 조를 위해 기도했다고 표시한 주차입니다.</p>
+              <p className="text-xs text-slate-500"><span aria-hidden="true" className="font-semibold text-brand-600">✓</span> 기도했어요 <span aria-hidden="true" className="mx-2 text-slate-300">·</span><span aria-hidden="true">—</span> 미체크</p>
+            </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {round.groups.map((group) => (
                 <div
                   key={group.groupNumber}
                   className="rounded-xl border border-slate-200 p-4"
                 >
-                  <p className="mb-2 text-xs font-bold tracking-wider text-brand-600">
-                    {group.groupNumber}조
-                  </p>
-                  <ul className="space-y-1 text-sm text-slate-700">
-                    {group.members.map((member) => (
-                      <li key={member.id}>
-                        {member.name}
-                        <span className="ml-1.5 text-xs text-slate-400">
-                          {member.team}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
+                  <h3 className="mb-3 flex items-baseline justify-between gap-2 text-xs font-bold text-brand-600">
+                    <span>{group.groupNumber}조</span>
+                    <span className="font-normal text-slate-400">{group.members.length}명</span>
+                  </h3>
+                  <table className="w-full table-fixed text-xs">
+                    <caption className="sr-only">{group.groupNumber}조 조원별 주차별 기도 체크</caption>
+                    <colgroup>
+                      <col />
+                      {PRAYER_WEEKS.map(week => <col key={week} className="w-9" />)}
+                    </colgroup>
+                    <thead className="border-b border-slate-100 text-slate-400">
+                      <tr>
+                        <th scope="col" className="pb-2 pr-2 text-left font-medium">이름</th>
+                        {PRAYER_WEEKS.map(week => <th key={week} scope="col" className="pb-2 text-center font-medium">{week}주</th>)}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {group.members.map(member => (
+                        <tr key={member.id}>
+                          <th scope="row" className="break-words py-2.5 pr-2 text-left font-medium text-slate-700">
+                            {member.name}
+                            <span className="mt-0.5 block text-[10px] font-normal text-slate-400">{member.team}</span>
+                          </th>
+                          {PRAYER_WEEKS.map((week, index) => {
+                            const checked = member.prayerChecks?.[index] === true;
+                            return <td key={week} className="py-2.5 text-center">
+                              <span className={`inline-flex h-6 w-6 items-center justify-center rounded-full font-semibold ${checked ? 'bg-brand-50 text-brand-700' : 'text-slate-300'}`}>
+                                <span aria-hidden="true">{checked ? '✓' : '—'}</span>
+                                <span className="sr-only">{week}주차 {checked ? '우리 조를 위해 기도했어요' : '미체크'}</span>
+                              </span>
+                            </td>;
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               ))}
             </div>
